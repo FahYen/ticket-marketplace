@@ -1,0 +1,10 @@
+target/
+**/*.rs.bk
+.git/
+.gitignore
+README.md
+LICENSE
+.env
+.env.local
+*.log
+
