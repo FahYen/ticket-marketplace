@@ -31,4 +31,5 @@ chrono = { version = "0.4", features = ["serde"] }
 # Additional utilities
 anyhow = "1.0"
 thiserror = "1.0"
+rand = "0.8"
 

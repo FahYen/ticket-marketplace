@@ -1,6 +1,6 @@
 # Ticket Marketplace
 
-A student sports ticket exchange marketplace with custodial Paciolan account integration.
+An MSU student sports ticket exchange marketplace with custodial Paciolan account integration.
 
 ### Using Docker Compose
 

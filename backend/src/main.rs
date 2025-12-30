@@ -1,15 +1,27 @@
 use axum::{
     http::StatusCode,
     response::Json,
-    routing::get,
-    Router,
 };
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use tower_http::cors::CorsLayer;
-use sqlx::PgPool;
 
 mod db;
+mod error;
+mod handlers;
+mod models;
+mod routes;
+mod utils;
+
+pub async fn health_check() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "status": "healthy",
+            "service": "ticket-marketplace-backend",
+            "version": env!("CARGO_PKG_VERSION")
+        })),
+    )
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -27,10 +39,7 @@ async fn main() -> anyhow::Result<()> {
     db::run_migrations(&pool).await?;
 
     // Build our application with routes
-    let app = Router::new()
-        .route("/health", get(health_check))
-        .with_state(pool) // Share database pool with all routes
-        .layer(CorsLayer::permissive());
+    let app = routes::create_router(pool);
 
     // Run it
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
@@ -40,16 +49,5 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-async fn health_check() -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "status": "healthy",
-            "service": "ticket-marketplace-backend",
-            "version": env!("CARGO_PKG_VERSION")
-        })),
-    )
 }
 

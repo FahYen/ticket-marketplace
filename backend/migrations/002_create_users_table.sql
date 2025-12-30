@@ -4,7 +4,7 @@ CREATE TABLE users (
     email VARCHAR(255) NOT NULL UNIQUE,
     password_hash VARCHAR(255) NOT NULL,
     email_verified BOOLEAN NOT NULL DEFAULT FALSE,
-    verification_token UUID,
+    verification_code VARCHAR(6),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -12,8 +12,8 @@ CREATE TABLE users (
 -- Create index on email for faster lookups
 CREATE INDEX idx_users_email ON users(email);
 
--- Create index on verification_token for email verification lookups
-CREATE INDEX idx_users_verification_token ON users(verification_token) WHERE verification_token IS NOT NULL;
+-- Create index on verification_code for email verification lookups
+CREATE INDEX idx_users_verification_code ON users(verification_code) WHERE verification_code IS NOT NULL;
 
 -- Create function to update updated_at timestamp
 CREATE FUNCTION update_updated_at_column()

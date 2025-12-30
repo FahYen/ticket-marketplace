@@ -34,9 +34,7 @@ pub async fn create_pool() -> Result<PgPool, sqlx::Error> {
 
 /// Run database migrations automatically on startup
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
-    info!("Running database migrations...");
     
-    // The path is relative to the crate root (backend/)
     sqlx::migrate!("./migrations")
         .run(pool)
         .await?;
