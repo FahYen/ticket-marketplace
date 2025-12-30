@@ -221,18 +221,17 @@ The `verification_code` column is included in the users table creation:
    - Add expiration time for verification codes (e.g., 15 minutes)
    - Clean up expired codes
 
+2. **Reset password**
+   - For when user forgets password
+
 3. **Rate Limiting**
    - Limit registration attempts per email/IP
    - Limit verification attempts
-
-4. **Email Domain Whitelist** (Optional)
-   - Currently only allows msu.edu domain
-   - Can maintain a whitelist if other domains needed in future
 
 ## Notes
 
 - Currently, verification codes are returned in the API response for testing
 - In production, remove the code from the response and only send via email
 - MSU email validation checks that email ends with `msu.edu`
-- Password requirements are minimal (8+ characters) as requested
+- Password requirements are minimal (8+ characters)
 
