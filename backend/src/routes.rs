@@ -1,17 +1,20 @@
 use axum::{
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 
-use crate::handlers::auth;
+use crate::handlers::{auth, games};
 
 pub fn create_router(pool: PgPool) -> Router {
     Router::new()
         .route("/health", get(crate::health_check))
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/verify-email", post(auth::verify_email))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/games", get(games::list_games).post(games::create_game))
+        .route("/api/games/:id", delete(games::delete_game))
         .layer(CorsLayer::permissive())
         .with_state(pool)
 }

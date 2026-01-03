@@ -28,6 +28,9 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - DB_POOL_MAX_CONNECTIONS=${DB_POOL_MAX_CONNECTIONS}
       - DB_POOL_MIN_CONNECTIONS=${DB_POOL_MIN_CONNECTIONS}
+      - JWT_SECRET=${JWT_SECRET}
+      - LISTING_CUTOFF_MINUTES=${LISTING_CUTOFF_MINUTES}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy

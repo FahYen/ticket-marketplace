@@ -41,3 +41,22 @@ pub struct VerifyEmailResponse {
     pub user_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserInfo {
+    pub id: Uuid,
+    pub email: String,
+    pub email_verified: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub token: String,
+    pub user: UserInfo,
+}
+

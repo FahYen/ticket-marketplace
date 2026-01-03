@@ -23,7 +23,7 @@ pub async fn health_check() -> (StatusCode, Json<Value>) {
     )
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()

@@ -29,6 +29,18 @@ pub enum AppError {
     #[error("Verification code expired")]
     VerificationCodeExpired,
 
+    #[error("Invalid email or password")]
+    InvalidCredentials,
+
+    #[error("Email not verified")]
+    EmailNotVerified,
+
+    #[error("Unauthorized")]
+    Unauthorized,
+
+    #[error("Invalid sport type")]
+    InvalidSportType,
+
     #[error("Internal server error")]
     Internal(#[from] anyhow::Error),
 }
@@ -42,6 +54,10 @@ impl IntoResponse for AppError {
             AppError::PasswordTooShort => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::InvalidVerificationCode => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::VerificationCodeExpired => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::InvalidCredentials => (StatusCode::UNAUTHORIZED, self.to_string()),
+            AppError::EmailNotVerified => (StatusCode::FORBIDDEN, self.to_string()),
+            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
+            AppError::InvalidSportType => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Database error".to_string(),

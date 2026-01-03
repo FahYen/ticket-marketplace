@@ -9,10 +9,12 @@ use uuid::Uuid;
 
 use crate::error::{AppError, Result};
 use crate::models::user::{
-    RegisterRequest, RegisterResponse, VerifyEmailRequest, VerifyEmailResponse,
+    LoginRequest, LoginResponse, RegisterRequest, RegisterResponse, UserInfo,
+    VerifyEmailRequest, VerifyEmailResponse,
 };
 use crate::utils::email::{generate_verification_code, validate_school_email};
-use crate::utils::password::{hash_password, validate_password};
+use crate::utils::jwt::generate_token;
+use crate::utils::password::{hash_password, validate_password, verify_password};
 
 /// Register a new user - creates account with unverified email and sends verification code
 pub async fn register(
@@ -115,6 +117,61 @@ pub async fn verify_email(
     let response = VerifyEmailResponse {
         message: "Email verified successfully. Your account is now active.".to_string(),
         user_id,
+    };
+
+    Ok((StatusCode::OK, Json(response)))
+}
+
+/// Login user - validates credentials and returns JWT token
+pub async fn login(
+    State(pool): State<PgPool>,
+    Json(req): Json<LoginRequest>,
+) -> Result<(StatusCode, Json<LoginResponse>)> {
+    // Find user by email
+    let user = sqlx::query_as::<_, (Uuid, String, bool, String)>(
+        r#"
+        SELECT id, email, email_verified, password_hash
+        FROM users
+        WHERE email = $1
+        "#,
+    )
+    .bind(&req.email)
+    .fetch_optional(&pool)
+    .await?;
+
+    let (user_id, email, email_verified, password_hash) = match user {
+        Some(user) => user,
+        None => {
+            warn!("Login attempt with invalid email: {}", req.email);
+            return Err(AppError::InvalidCredentials);
+        }
+    };
+
+    // Verify password
+    let password_valid = verify_password(&req.password, &password_hash)?;
+    if !password_valid {
+        warn!("Login attempt with invalid password for email: {}", req.email);
+        return Err(AppError::InvalidCredentials);
+    }
+
+    // Check if email is verified
+    if !email_verified {
+        warn!("Login attempt with unverified email: {}", req.email);
+        return Err(AppError::EmailNotVerified);
+    }
+
+    // Generate JWT token
+    let token = generate_token(&user_id.to_string(), &email)?;
+
+    info!("User logged in: {} (ID: {})", email, user_id);
+
+    let response = LoginResponse {
+        token,
+        user: UserInfo {
+            id: user_id,
+            email,
+            email_verified,
+        },
     };
 
     Ok((StatusCode::OK, Json(response)))
