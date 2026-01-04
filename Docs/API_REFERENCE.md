@@ -301,6 +301,54 @@ Authorization: <JWT_TOKEN>
 
 ---
 
+### GET /api/tickets/my-listings
+List user's own tickets (authenticated).
+
+**CLI Command:**
+```bash
+# List all tickets
+curl http://localhost:3000/api/tickets/my-listings \
+  -H "Authorization: your-jwt-token-here"
+
+# Filter by status (optional)
+curl "http://localhost:3000/api/tickets/my-listings?status=verified" \
+  -H "Authorization: your-jwt-token-here"
+```
+
+**Headers:**
+```
+Authorization: <JWT_TOKEN>
+```
+
+**Query Parameters:**
+- `status` (optional): Filter by status. Valid values: `unverified`, `verified`, `reserved`, `paid`, `sold`, `cancelled`
+
+**Response (200 OK):**
+```json
+{
+  "tickets": [
+    {
+      "id": "uuid-here",
+      "seller_id": "uuid-here",
+      "game_id": "uuid-here",
+      "event_name": "Richmond @ Spartan Football",
+      "event_date": "2026-09-09T15:30:00Z",
+      "level": "STUD",
+      "seat_section": "GEN",
+      "seat_row": "128",
+      "seat_number": "28",
+      "price": 5000,
+      "status": "Verified",
+      "created_at": "2026-01-03T12:00:00Z"
+    }
+  ]
+}
+```
+
+**Note:** Returns all tickets where `seller_id` matches the authenticated user's ID. Tickets are ordered by creation date (newest first). Use the `status` query parameter to filter by ticket status.
+
+---
+
 ### POST /api/tickets/:id/verify
 Verify a ticket (admin/bot endpoint). Changes status from `unverified` to `verified`.
 

@@ -1,8 +1,9 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::Json,
 };
+use serde::Deserialize;
 use serde::Serialize;
 use sqlx::PgPool;
 use std::env;
@@ -213,6 +214,74 @@ pub async fn list_tickets(
     .await?;
 
     info!("Listed {} verified tickets", tickets.len());
+
+    Ok(Json(ListTicketsResponse { tickets }))
+}
+
+/// Query parameters for my-listings endpoint
+#[derive(Debug, Deserialize)]
+pub struct MyListingsQuery {
+    pub status: Option<String>,
+}
+
+/// List user's own tickets (authenticated endpoint)
+pub async fn my_listings(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Query(params): Query<MyListingsQuery>,
+) -> Result<Json<ListTicketsResponse>> {
+    // Extract user_id from JWT token
+    let user_id = extract_user_id(&headers)?;
+    info!("Listing tickets for seller_id: {}", user_id);
+
+    // Build query based on optional status filter
+    let tickets = if let Some(status_str) = params.status {
+        // Parse status string to enum
+        let status = match status_str.to_lowercase().as_str() {
+            "unverified" => TicketStatus::Unverified,
+            "verified" => TicketStatus::Verified,
+            "reserved" => TicketStatus::Reserved,
+            "paid" => TicketStatus::Paid,
+            "sold" => TicketStatus::Sold,
+            "cancelled" => TicketStatus::Cancelled,
+            _ => {
+                error!("Invalid status filter: {}", status_str);
+                return Err(AppError::Internal(anyhow::anyhow!("Invalid status filter")));
+            }
+        };
+
+        sqlx::query_as::<_, Ticket>(
+            r#"
+            SELECT id, seller_id, game_id, event_name, event_date,
+                   level, seat_section, seat_row, seat_number, price, status,
+                   reserved_at, reserved_by, created_at, updated_at
+            FROM tickets
+            WHERE seller_id = $1 AND status = $2
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(&user_id)
+        .bind(&status)
+        .fetch_all(&pool)
+        .await?
+    } else {
+        // No status filter - return all tickets for this user
+        sqlx::query_as::<_, Ticket>(
+            r#"
+            SELECT id, seller_id, game_id, event_name, event_date,
+                   level, seat_section, seat_row, seat_number, price, status,
+                   reserved_at, reserved_by, created_at, updated_at
+            FROM tickets
+            WHERE seller_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(&user_id)
+        .fetch_all(&pool)
+        .await?
+    };
+
+    info!("Listed {} tickets for seller {}", tickets.len(), user_id);
 
     Ok(Json(ListTicketsResponse { tickets }))
 }

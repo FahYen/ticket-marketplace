@@ -16,6 +16,7 @@ pub fn create_router(pool: PgPool) -> Router {
         .route("/api/games", get(games::list_games).post(games::create_game))
         .route("/api/games/:id", delete(games::delete_game))
         .route("/api/tickets", get(tickets::list_tickets).post(tickets::create_ticket))
+        .route("/api/tickets/my-listings", get(tickets::my_listings))
         .route("/api/tickets/:id/verify", post(tickets::verify_ticket))
         .layer(CorsLayer::permissive())
         .with_state(pool)
