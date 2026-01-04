@@ -2,6 +2,8 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 use std::env;
 use chrono::{Duration, Utc};
+use axum::http::HeaderMap;
+use uuid::Uuid;
 use crate::error::{AppError, Result};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,5 +56,19 @@ pub fn validate_token(token: &str) -> Result<Claims> {
     .map_err(|_| AppError::Internal(anyhow::anyhow!("Invalid token")))?;
 
     Ok(token_data.claims)
+}
+
+/// Extract and validate JWT token from Authorization header, returning the user ID
+pub fn extract_user_id(headers: &HeaderMap) -> Result<Uuid> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .ok_or(AppError::Unauthorized)?;
+
+    let claims = validate_token(auth_header)?;
+    let user_id = Uuid::parse_str(&claims.id)
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("Invalid user ID in token")))?;
+
+    Ok(user_id)
 }
 

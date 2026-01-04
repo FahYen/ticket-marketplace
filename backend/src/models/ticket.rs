@@ -49,9 +49,22 @@ pub struct CreateTicketRequest {
     pub price: i32,
 }
 
-/// Request to update ticket status (verify, cancel, etc.)
+/// Request to update ticket (price and/or status)
 #[derive(Debug, Deserialize)]
 pub struct UpdateTicketRequest {
+    pub status: Option<String>,
+    pub price: Option<i32>,
+}
+
+/// Response for list tickets endpoint
+#[derive(Debug, Serialize)]
+pub struct ListTicketsResponse {
+    pub tickets: Vec<Ticket>,
+}
+
+/// Query parameters for my-listings endpoint
+#[derive(Debug, Deserialize)]
+pub struct MyListingsQuery {
     pub status: Option<String>,
 }
 

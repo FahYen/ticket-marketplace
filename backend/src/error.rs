@@ -38,6 +38,9 @@ pub enum AppError {
     #[error("Unauthorized")]
     Unauthorized,
 
+    #[error("You can only update your own tickets")]
+    Forbidden,
+
     #[error("Invalid sport type")]
     InvalidSportType,
 
@@ -57,6 +60,7 @@ impl IntoResponse for AppError {
             AppError::InvalidCredentials => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::EmailNotVerified => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
+            AppError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::InvalidSportType => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

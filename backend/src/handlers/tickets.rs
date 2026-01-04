@@ -6,27 +6,13 @@ use axum::{
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::PgPool;
-use std::env;
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
-use crate::models::ticket::{CreateTicketRequest, Ticket, TicketStatus};
-use crate::utils::jwt::validate_token;
-
-/// Extract and validate JWT token from Authorization header
-fn extract_user_id(headers: &HeaderMap) -> Result<Uuid> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .ok_or(AppError::Unauthorized)?;
-
-    let claims = validate_token(auth_header)?;
-    let user_id = Uuid::parse_str(&claims.id)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("Invalid user ID in token")))?;
-
-    Ok(user_id)
-}
+use crate::models::ticket::{CreateTicketRequest, ListTicketsResponse, MyListingsQuery, Ticket, TicketStatus, UpdateTicketRequest};
+use crate::utils::auth::validate_admin_key;
+use crate::utils::jwt::extract_user_id;
 
 /// Create a new ticket listing
 pub async fn create_ticket(
@@ -106,94 +92,6 @@ pub async fn create_ticket(
     Ok((StatusCode::CREATED, Json(ticket)))
 }
 
-/// Extract and validate admin API key from Authorization header
-fn validate_admin_key(headers: &HeaderMap) -> Result<()> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|h| h.to_str().ok())
-        .ok_or(AppError::Unauthorized)?;
-
-    let expected_key = env::var("ADMIN_API_KEY")
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("ADMIN_API_KEY environment variable must be set")))?;
-
-    if auth_header != expected_key {
-        return Err(AppError::Unauthorized);
-    }
-
-    Ok(())
-}
-
-/// Verify a ticket (admin/bot endpoint)
-/// Changes status from 'unverified' to 'verified'
-pub async fn verify_ticket(
-    State(pool): State<PgPool>,
-    headers: HeaderMap,
-    Path(ticket_id): Path<Uuid>,
-) -> Result<Json<Ticket>> {
-    info!("Received verify ticket request for ticket_id: {}", ticket_id);
-
-    // Validate admin API key
-    validate_admin_key(&headers)?;
-    info!("Admin key validated for verify ticket");
-
-    // Check if ticket exists and is unverified
-    let ticket = sqlx::query_as::<_, Ticket>(
-        r#"
-        SELECT id, seller_id, game_id, event_name, event_date,
-               level, seat_section, seat_row, seat_number, price, status,
-               reserved_at, reserved_by, created_at, updated_at
-        FROM tickets
-        WHERE id = $1
-        "#,
-    )
-    .bind(&ticket_id)
-    .fetch_optional(&pool)
-    .await?;
-
-    let ticket = ticket.ok_or_else(|| {
-        error!("Ticket not found: {}", ticket_id);
-        AppError::Internal(anyhow::anyhow!("Ticket not found"))
-    })?;
-
-    // Validate ticket is in unverified state
-    if !matches!(ticket.status, TicketStatus::Unverified) {
-        error!("Ticket {} is not unverified, current status: {:?}", ticket_id, ticket.status);
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "Ticket must be in unverified state to be verified"
-        )));
-    }
-
-    // Update ticket status to verified
-    let verified_ticket = sqlx::query_as::<_, Ticket>(
-        r#"
-        UPDATE tickets
-        SET status = $1
-        WHERE id = $2
-        RETURNING id, seller_id, game_id, event_name, event_date,
-                  level, seat_section, seat_row, seat_number, price, status,
-                  reserved_at, reserved_by, created_at, updated_at
-        "#,
-    )
-    .bind(&TicketStatus::Verified)
-    .bind(&ticket_id)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| {
-        error!("Failed to verify ticket {}: {}", ticket_id, e);
-        e
-    })?;
-
-    info!("Ticket verified: {}", ticket_id);
-
-    Ok(Json(verified_ticket))
-}
-
-/// Response for list tickets endpoint
-#[derive(Debug, Serialize)]
-pub struct ListTicketsResponse {
-    pub tickets: Vec<Ticket>,
-}
-
 /// List all verified tickets (public endpoint, no authentication required)
 pub async fn list_tickets(
     State(pool): State<PgPool>,
@@ -216,12 +114,6 @@ pub async fn list_tickets(
     info!("Listed {} verified tickets", tickets.len());
 
     Ok(Json(ListTicketsResponse { tickets }))
-}
-
-/// Query parameters for my-listings endpoint
-#[derive(Debug, Deserialize)]
-pub struct MyListingsQuery {
-    pub status: Option<String>,
 }
 
 /// List user's own tickets (authenticated endpoint)
@@ -284,5 +176,148 @@ pub async fn my_listings(
     info!("Listed {} tickets for seller {}", tickets.len(), user_id);
 
     Ok(Json(ListTicketsResponse { tickets }))
+}
+
+/// Update a ticket (admin verification, user cancellation, or price update)
+/// Admin (ADMIN_API_KEY): can verify tickets (status: "verified")
+/// User (JWT): can cancel tickets (status: "cancelled") or update price
+pub async fn update_ticket(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<Uuid>,
+    Json(req): Json<UpdateTicketRequest>,
+) -> Result<Json<Ticket>> {
+    info!("Received update ticket request for ticket_id: {}", ticket_id);
+
+    // Ensure at least one field is being updated
+    if req.status.is_none() && req.price.is_none() {
+        return Err(AppError::Internal(anyhow::anyhow!("At least one field (status or price) must be provided for update.")));
+    }
+
+    // Fetch the ticket
+    let ticket = sqlx::query_as::<_, Ticket>(
+        r#"
+        SELECT id, seller_id, game_id, event_name, event_date,
+               level, seat_section, seat_row, seat_number, price, status,
+               reserved_at, reserved_by, created_at, updated_at
+        FROM tickets
+        WHERE id = $1
+        "#,
+    )
+    .bind(&ticket_id)
+    .fetch_optional(&pool)
+    .await?;
+
+    let ticket = ticket.ok_or_else(|| {
+        error!("Ticket not found: {}", ticket_id);
+        AppError::Internal(anyhow::anyhow!("Ticket not found"))
+    })?;
+
+    // Check authentication and determine operation type
+    let is_admin = validate_admin_key(&headers).is_ok();
+    
+    let mut new_status = ticket.status;
+    let mut new_price = ticket.price;
+
+    if is_admin {
+        // Admin operations: verification only
+        info!("Admin key validated for ticket update");
+        
+        if req.price.is_some() {
+            error!("Admin cannot update ticket price");
+            return Err(AppError::Internal(anyhow::anyhow!("Admin can only verify tickets, not update price")));
+        }
+
+        if let Some(status_str) = req.status {
+            match status_str.to_lowercase().as_str() {
+                "verified" => {
+                    // Validate ticket is in unverified state
+                    if !matches!(ticket.status, TicketStatus::Unverified) {
+                        error!("Ticket {} is not unverified, current status: {:?}", ticket_id, ticket.status);
+                        return Err(AppError::Internal(anyhow::anyhow!(
+                            "Ticket must be in unverified state to be verified"
+                        )));
+                    }
+                    new_status = TicketStatus::Verified;
+                    info!("Admin verifying ticket {}", ticket_id);
+                }
+                _ => {
+                    error!("Invalid status for admin update: {}", status_str);
+                    return Err(AppError::Internal(anyhow::anyhow!("Admin can only set status to 'verified'")));
+                }
+            }
+        } else {
+            error!("Admin must provide status field for verification");
+            return Err(AppError::Internal(anyhow::anyhow!("Admin must provide status field for verification")));
+        }
+    } else {
+        // User operations: cancellation and price updates (requires ownership)
+        let user_id = extract_user_id(&headers)?;
+        info!("User ID: {}", user_id);
+
+        // Ownership check
+        if ticket.seller_id != user_id {
+            error!("User {} attempted to update ticket {} owned by {}", user_id, ticket_id, ticket.seller_id);
+            return Err(AppError::Forbidden);
+        }
+
+        // Validate that ticket is in a state that allows updates (unverified or verified only)
+        let can_update = matches!(ticket.status, TicketStatus::Unverified | TicketStatus::Verified);
+        if !can_update {
+            error!("Cannot update ticket {} with status: {:?}", ticket_id, ticket.status);
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Cannot update ticket. Only unverified or verified tickets can be updated."
+            )));
+        }
+
+        // Process status update (cancel)
+        if let Some(status_str) = req.status {
+            match status_str.to_lowercase().as_str() {
+                "cancelled" => {
+                    new_status = TicketStatus::Cancelled;
+                    info!("Cancelling ticket {}", ticket_id);
+                }
+                _ => {
+                    error!("Invalid status for user update: {}", status_str);
+                    return Err(AppError::Internal(anyhow::anyhow!("Users can only set status to 'cancelled'")));
+                }
+            }
+        }
+
+        // Process price update
+        if let Some(price) = req.price {
+            if price < 0 {
+                error!("Invalid price: {}", price);
+                return Err(AppError::Internal(anyhow::anyhow!("Price must be >= 0")));
+            }
+            new_price = price;
+            info!("Updating price for ticket {} to {}", ticket_id, price);
+        }
+    }
+
+    // Update the ticket
+    let updated_ticket = sqlx::query_as::<_, Ticket>(
+        r#"
+        UPDATE tickets
+        SET status = $1, price = $2, updated_at = NOW()
+        WHERE id = $3
+        RETURNING id, seller_id, game_id, event_name, event_date,
+                  level, seat_section, seat_row, seat_number, price, status,
+                  reserved_at, reserved_by, created_at, updated_at
+        "#,
+    )
+    .bind(&new_status)
+    .bind(&new_price)
+    .bind(&ticket_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to update ticket {}: {}", ticket_id, e);
+        e
+    })?;
+
+    info!("Ticket updated: {} - status: {:?}, price: {}", ticket_id, new_status, new_price);
+
+    Ok(Json(updated_ticket))
 }
 

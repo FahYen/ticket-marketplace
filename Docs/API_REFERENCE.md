@@ -349,19 +349,74 @@ Authorization: <JWT_TOKEN>
 
 ---
 
-### POST /api/tickets/:id/verify
-Verify a ticket (admin/bot endpoint). Changes status from `unverified` to `verified`.
+### PATCH /api/tickets/:id
+Update a ticket. Supports both user operations (cancel, update price) and admin operations (verify).
 
-**CLI Command:**
+**Authentication:**
+- **User operations**: Requires JWT token (owner-only)
+- **Admin operations**: Requires ADMIN_API_KEY
+
+**User Operations (JWT Auth):**
 ```bash
-curl -X POST http://localhost:3000/api/tickets/<ticket-id>/verify \
-  -H "Authorization: your-admin-api-key-here"
+# Cancel a ticket
+curl -X PATCH http://localhost:3000/api/tickets/<ticket-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-jwt-token-here" \
+  -d '{
+    "status": "cancelled"
+  }'
+
+# Update price
+curl -X PATCH http://localhost:3000/api/tickets/<ticket-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-jwt-token-here" \
+  -d '{
+    "price": 4500
+  }'
+
+# Cancel and update price in one request
+curl -X PATCH http://localhost:3000/api/tickets/<ticket-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-jwt-token-here" \
+  -d '{
+    "status": "cancelled",
+    "price": 4500
+  }'
+```
+
+**Admin Operations (ADMIN_API_KEY):**
+```bash
+# Verify a ticket (admin/bot only)
+curl -X PATCH http://localhost:3000/api/tickets/<ticket-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-admin-api-key-here" \
+  -d '{
+    "status": "verified"
+  }'
 ```
 
 **Headers:**
 ```
-Authorization: <ADMIN_API_KEY>
+Authorization: <JWT_TOKEN> (for user operations)
+Authorization: <ADMIN_API_KEY> (for admin operations)
 ```
+
+**Request (User):**
+```json
+{
+  "status": "cancelled",
+  "price": 4500
+}
+```
+
+**Request (Admin):**
+```json
+{
+  "status": "verified"
+}
+```
+
+Both `status` and `price` are optional for user operations, but at least one must be provided. For admin operations, only `status: "verified"` is allowed.
 
 **Response (200 OK):**
 ```json
@@ -384,11 +439,26 @@ Authorization: <ADMIN_API_KEY>
 **Response (400 Bad Request):**
 ```json
 {
+  "error": "Cannot update ticket. Only unverified or verified tickets can be updated."
+}
+```
+or
+```json
+{
   "error": "Ticket must be in unverified state to be verified"
 }
 ```
 
-**Note:** This endpoint is used by the Selenium bot after it receives a ticket transfer and accepts it in Paciolan. Only tickets with status `unverified` can be verified.
+**Response (403 Forbidden):**
+```json
+{
+  "error": "You can only update your own tickets"
+}
+```
+
+**Note:**
+- **User operations**: Only tickets with status `unverified` or `verified` can be updated. Only the ticket owner (seller) can update their tickets. To cancel, set `status` to `"cancelled"`. To update price, provide a `price` value >= 0.
+- **Admin operations**: Only tickets with status `unverified` can be verified. The admin endpoint is used by the Selenium bot after it receives a ticket transfer and accepts it in Paciolan. Admin cannot update ticket price.
 
 ---
 
