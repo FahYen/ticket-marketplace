@@ -267,6 +267,49 @@ Authorization: <JWT_TOKEN>
 
 ---
 
+### POST /api/tickets/:id/verify
+Verify a ticket (admin/bot endpoint). Changes status from `unverified` to `verified`.
+
+**CLI Command:**
+```bash
+curl -X POST http://localhost:3000/api/tickets/<ticket-id>/verify \
+  -H "Authorization: your-admin-api-key-here"
+```
+
+**Headers:**
+```
+Authorization: <ADMIN_API_KEY>
+```
+
+**Response (200 OK):**
+```json
+{
+  "id": "uuid-here",
+  "seller_id": "uuid-here",
+  "game_id": "uuid-here",
+  "event_name": "Richmond @ Spartan Football",
+  "event_date": "2026-09-09T15:30:00Z",
+  "level": "STUD",
+  "seat_section": "GEN",
+  "seat_row": "128",
+  "seat_number": "28",
+  "price": 5000,
+  "status": "Verified",
+  "created_at": "2026-01-03T12:00:00Z"
+}
+```
+
+**Response (400 Bad Request):**
+```json
+{
+  "error": "Ticket must be in unverified state to be verified"
+}
+```
+
+**Note:** This endpoint is used by the Selenium bot after it receives a ticket transfer and accepts it in Paciolan. Only tickets with status `unverified` can be verified.
+
+---
+
 ## Error Responses
 
 All error responses follow this format:
