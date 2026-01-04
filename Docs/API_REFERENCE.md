@@ -210,6 +210,40 @@ Authorization: <ADMIN_API_KEY>
 
 ## Tickets
 
+### GET /api/tickets
+List all verified tickets available for sale (public, no authentication required).
+
+**CLI Command:**
+```bash
+curl http://localhost:3000/api/tickets
+```
+
+**Response (200 OK):**
+```json
+{
+  "tickets": [
+    {
+      "id": "uuid-here",
+      "seller_id": "uuid-here",
+      "game_id": "uuid-here",
+      "event_name": "Richmond @ Spartan Football",
+      "event_date": "2026-09-09T15:30:00Z",
+      "level": "STUD",
+      "seat_section": "GEN",
+      "seat_row": "128",
+      "seat_number": "28",
+      "price": 5000,
+      "status": "Verified",
+      "created_at": "2026-01-03T12:00:00Z"
+    }
+  ]
+}
+```
+
+**Note:** Only tickets with status `"Verified"` are returned. Tickets are ordered by event date (earliest first), then by creation date.
+
+---
+
 ### POST /api/tickets
 Create a new ticket listing (authenticated).
 

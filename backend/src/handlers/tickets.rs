@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Json,
 };
+use serde::Serialize;
 use sqlx::PgPool;
 use std::env;
 use tracing::{error, info};
@@ -184,5 +185,35 @@ pub async fn verify_ticket(
     info!("Ticket verified: {}", ticket_id);
 
     Ok(Json(verified_ticket))
+}
+
+/// Response for list tickets endpoint
+#[derive(Debug, Serialize)]
+pub struct ListTicketsResponse {
+    pub tickets: Vec<Ticket>,
+}
+
+/// List all verified tickets (public endpoint, no authentication required)
+pub async fn list_tickets(
+    State(pool): State<PgPool>,
+) -> Result<Json<ListTicketsResponse>> {
+    // Get all tickets with status='verified' (available for sale)
+    let tickets = sqlx::query_as::<_, Ticket>(
+        r#"
+        SELECT id, seller_id, game_id, event_name, event_date,
+               level, seat_section, seat_row, seat_number, price, status,
+               reserved_at, reserved_by, created_at, updated_at
+        FROM tickets
+        WHERE status = $1
+        ORDER BY event_date ASC, created_at ASC
+        "#,
+    )
+    .bind(&TicketStatus::Verified)
+    .fetch_all(&pool)
+    .await?;
+
+    info!("Listed {} verified tickets", tickets.len());
+
+    Ok(Json(ListTicketsResponse { tickets }))
 }
 
