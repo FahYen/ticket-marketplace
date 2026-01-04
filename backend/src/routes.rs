@@ -5,7 +5,7 @@ use axum::{
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 
-use crate::handlers::{auth, games};
+use crate::handlers::{auth, games, tickets};
 
 pub fn create_router(pool: PgPool) -> Router {
     Router::new()
@@ -15,6 +15,7 @@ pub fn create_router(pool: PgPool) -> Router {
         .route("/api/auth/login", post(auth::login))
         .route("/api/games", get(games::list_games).post(games::create_game))
         .route("/api/games/:id", delete(games::delete_game))
+        .route("/api/tickets", post(tickets::create_ticket))
         .layer(CorsLayer::permissive())
         .with_state(pool)
 }

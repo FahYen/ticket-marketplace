@@ -6,7 +6,7 @@ use crate::error::{AppError, Result};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String, // user ID (subject)
+    pub id: String,
     pub email: String,
     pub exp: usize, // expiration time
 }
@@ -28,7 +28,7 @@ pub fn generate_token(user_id: &str, email: &str) -> Result<String> {
         })?;
 
     let claims = Claims {
-        sub: user_id.to_string(),
+        id: user_id.to_string(),
         email: email.to_string(),
         exp: expiration,
     };

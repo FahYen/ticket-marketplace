@@ -1,5 +1,5 @@
 -- Create ticket status enum type
-CREATE TYPE ticket_status AS ENUM ('unverified', 'verified', 'reserved', 'sold', 'cancelled');
+CREATE TYPE ticket_status AS ENUM ('unverified', 'verified', 'reserved', 'paid', 'sold', 'cancelled');
 
 -- Create tickets table
 CREATE TABLE tickets (

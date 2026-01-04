@@ -63,7 +63,7 @@ curl -X POST http://localhost:3000/api/auth/verify-email \
   -H "Content-Type: application/json" \
   -d '{
     "email": "student@msu.edu",
-    "verification_code": "123456"
+    "code": "123456"
   }'
 ```
 
@@ -71,7 +71,7 @@ curl -X POST http://localhost:3000/api/auth/verify-email \
 ```json
 {
   "email": "student@msu.edu",
-  "verification_code": "123456"
+  "code": "123456"
 }
 ```
 
@@ -205,6 +205,65 @@ Authorization: <ADMIN_API_KEY>
 ```
 
 **Response (204 No Content)**
+
+---
+
+## Tickets
+
+### POST /api/tickets
+Create a new ticket listing (authenticated).
+
+**CLI Command:**
+```bash
+curl -X POST http://localhost:3000/api/tickets \
+  -H "Content-Type: application/json" \
+  -H "Authorization: your-jwt-token-here" \
+  -d '{
+    "game_id": "uuid-here",
+    "level": "STUD",
+    "seat_section": "GEN",
+    "seat_row": "128",
+    "seat_number": "28",
+    "price": 5000
+  }'
+```
+
+**Headers:**
+```
+Authorization: <JWT_TOKEN>
+```
+
+**Request:**
+```json
+{
+  "game_id": "uuid-here",
+  "level": "STUD",
+  "seat_section": "GEN",
+  "seat_row": "128",
+  "seat_number": "28",
+  "price": 5000
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "id": "uuid-here",
+  "seller_id": "uuid-here",
+  "game_id": "uuid-here",
+  "event_name": "Richmond @ Spartan Football",
+  "event_date": "2026-09-09T15:30:00Z",
+  "level": "STUD",
+  "seat_section": "GEN",
+  "seat_row": "128",
+  "seat_number": "28",
+  "price": 5000,
+  "status": "Unverified",
+  "created_at": "2026-01-03T12:00:00Z"
+}
+```
+
+**Note:** The backend automatically populates `event_name` and `event_date` from the games table, and sets `status` to `"Unverified"`. The ticket must be verified (by the custodian/bot) before it becomes available for sale.
 
 ---
 

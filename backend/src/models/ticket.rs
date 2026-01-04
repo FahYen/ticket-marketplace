@@ -5,11 +5,12 @@ use uuid::Uuid;
 
 /// Database ticket_status enum mapping
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "ticket_status")]
+#[sqlx(type_name = "ticket_status", rename_all = "lowercase")]
 pub enum TicketStatus {
     Unverified,
     Verified,
     Reserved,
+    Paid,
     Sold,
     Cancelled,
 }
