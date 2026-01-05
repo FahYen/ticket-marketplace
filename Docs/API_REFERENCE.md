@@ -321,7 +321,7 @@ Authorization: <JWT_TOKEN>
 ```
 
 **Query Parameters:**
-- `status` (optional): Filter by status. Valid values: `unverified`, `verified`, `reserved`, `paid`, `sold`, `cancelled`
+- `status` (optional): Filter by status. Valid values: `unverified`, `verified`, `reserved`, `paid`, `sold`, `refunding`, `cancelled`
 
 **Response (200 OK):**
 ```json
