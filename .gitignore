@@ -23,3 +23,17 @@ Thumbs.db
 # Logs
 *.log
 
+# Frontend (Node/Tailwind/Vite)
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.cache/
+/frontend/.vite/
+/frontend/package-lock.json
+/frontend/.env
+/frontend/.env.local
+/frontend/.DS_Store
+/frontend/.idea/
+
+# Editor folders
+/.history/
+
