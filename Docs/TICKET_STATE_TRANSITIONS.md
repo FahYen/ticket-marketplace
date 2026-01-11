@@ -19,6 +19,14 @@ This document defines the state transition flow for tickets from initial listing
 4. **Grey Period**: `${GREY_PERIOD_MINUTES}`-minute buffer after `${RESERVATION_WINDOW_MINUTES}`-minute reservation window for webhook processing
 5. **Idempotency**: All operations must be safe to retry
 
+### API Endpoints
+
+| Transition | Endpoint | HTTP Verb | Auth Method |
+|------------|----------|-----------|-------------|
+| unverified → verified | `/api/tickets/:id/verify` | `PATCH` | `ADMIN_API_KEY` (optional) |
+| verified → reserved | `/api/tickets/:id/reserve` | `POST` | `Bearer <JWT_TOKEN>` |
+| reserved → paid | `/api/webhooks/stripe` | `POST` | Stripe webhook signature |
+
 ### Environment Variables
 
 All time durations are configurable via environment variables:
@@ -256,7 +264,7 @@ From the backend's perspective, the bot rejects/ignores the transfer in the foll
 
 ```
 PATCH /api/tickets/:id/verify
-Authorization: Bearer <ADMIN_API_KEY>
+Authorization: <ADMIN_API_KEY>
 ```
 
 **Response:**
