@@ -6,13 +6,15 @@ use axum::{
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::PgPool;
+use std::env;
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
-use crate::models::ticket::{CreateTicketRequest, ListTicketsResponse, MyListingsQuery, Ticket, TicketStatus, UpdateTicketRequest};
+use crate::models::ticket::{CreateTicketRequest, ListTicketsResponse, MyListingsQuery, ReserveTicketResponse, Ticket, TicketStatus, UpdateTicketRequest};
 use crate::utils::auth::validate_admin_key;
 use crate::utils::jwt::extract_user_id;
+use chrono::Utc;
 
 /// Create a new ticket listing
 pub async fn create_ticket(
@@ -57,17 +59,24 @@ pub async fn create_ticket(
 
     info!("Found game: {} at {}", event_name, event_date);
 
-    // Insert ticket with status='unverified'
+    // Get transfer deadline hours from environment variable (default: 24 hours)
+    let transfer_deadline_hours: i64 = env::var("TRANSFER_DEADLINE_HOURS")
+        .unwrap_or_else(|_| "24".to_string())
+        .parse()
+        .unwrap_or(24);
+
+    // Insert ticket with status='unverified' and calculate transfer_deadline
     let ticket = sqlx::query_as::<_, Ticket>(
         r#"
         INSERT INTO tickets (
             seller_id, game_id, event_name, event_date,
-            level, seat_section, seat_row, seat_number, price, status
+            level, seat_section, seat_row, seat_number, price, status,
+            transfer_deadline
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW() + INTERVAL '1 hour' * $11)
         RETURNING id, seller_id, game_id, event_name, event_date,
                   level, seat_section, seat_row, seat_number, price, status,
-                  reserved_at, reserved_by, created_at, updated_at
+                  transfer_deadline, price_at_reservation, reserved_at, reserved_by, created_at, updated_at
         "#,
     )
     .bind(&seller_id)
@@ -80,6 +89,7 @@ pub async fn create_ticket(
     .bind(&req.seat_number)
     .bind(&req.price)
     .bind(&TicketStatus::Unverified)
+    .bind(&transfer_deadline_hours)
     .fetch_one(&pool)
     .await
     .map_err(|e| {
@@ -101,7 +111,7 @@ pub async fn list_tickets(
         r#"
         SELECT id, seller_id, game_id, event_name, event_date,
                level, seat_section, seat_row, seat_number, price, status,
-               reserved_at, reserved_by, created_at, updated_at
+               transfer_deadline, price_at_reservation, reserved_at, reserved_by, created_at, updated_at
         FROM tickets
         WHERE status = $1
         ORDER BY event_date ASC, created_at ASC
@@ -147,7 +157,7 @@ pub async fn my_listings(
             r#"
             SELECT id, seller_id, game_id, event_name, event_date,
                    level, seat_section, seat_row, seat_number, price, status,
-                   reserved_at, reserved_by, created_at, updated_at
+                   transfer_deadline, price_at_reservation, reserved_at, reserved_by, created_at, updated_at
             FROM tickets
             WHERE seller_id = $1 AND status = $2
             ORDER BY created_at DESC
@@ -163,7 +173,7 @@ pub async fn my_listings(
             r#"
             SELECT id, seller_id, game_id, event_name, event_date,
                    level, seat_section, seat_row, seat_number, price, status,
-                   reserved_at, reserved_by, created_at, updated_at
+                   transfer_deadline, price_at_reservation, reserved_at, reserved_by, created_at, updated_at
             FROM tickets
             WHERE seller_id = $1
             ORDER BY created_at DESC
@@ -177,5 +187,75 @@ pub async fn my_listings(
     info!("Listed {} tickets for seller {}", tickets.len(), user_id);
 
     Ok(Json(ListTicketsResponse { tickets }))
+}
+
+/// Reserve a ticket (verified → reserved)
+pub async fn reserve_ticket(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<Uuid>,
+) -> Result<Json<ReserveTicketResponse>> {
+    // Extract buyer_id from JWT token
+    let buyer_id = extract_user_id(&headers)?;
+    info!("Reserve request for ticket {} by buyer {}", ticket_id, buyer_id);
+
+    // Get total reservation window minutes from environment variable (default: 7 minutes)
+    let total_reservation_window_minutes: i64 = env::var("TOTAL_RESERVATION_WINDOW_MINUTES")
+        .unwrap_or_else(|_| "7".to_string())
+        .parse()
+        .unwrap_or(7);
+
+    // Calculate expiry time: NOW() - INTERVAL '1 minute' * TOTAL_RESERVATION_WINDOW_MINUTES
+    // Tickets with reserved_at older than this are considered expired
+    let expiry_time = Utc::now() - chrono::Duration::minutes(total_reservation_window_minutes);
+
+    // Atomic reservation query
+    // This updates the ticket to reserved status only if:
+    // - status is 'verified', OR
+    // - status is 'reserved' AND reserved_at < expiry_time (expired reservation)
+    let result = sqlx::query_as::<_, (Uuid, i32, chrono::DateTime<Utc>)>(
+        r#"
+        UPDATE tickets
+        SET status = 'reserved',
+            reserved_at = NOW(),
+            reserved_by = $1,
+            price_at_reservation = price,
+            updated_at = NOW()
+        WHERE id = $2
+          AND (
+            status = 'verified'
+            OR (
+              status = 'reserved'
+              AND reserved_at < $3
+            )
+          )
+        RETURNING id, price_at_reservation, reserved_at
+        "#,
+    )
+    .bind(&buyer_id)
+    .bind(&ticket_id)
+    .bind(&expiry_time)
+    .fetch_optional(&pool)
+    .await?;
+
+    match result {
+        Some((ticket_id, price_at_reservation, reserved_at)) => {
+            info!(
+                "Ticket {} reserved by buyer {} at price {}",
+                ticket_id, buyer_id, price_at_reservation
+            );
+
+            Ok(Json(ReserveTicketResponse {
+                ticket_id,
+                status: TicketStatus::Reserved,
+                price_at_reservation,
+                reserved_at,
+            }))
+        }
+        None => {
+            info!("Ticket {} is not available for reservation", ticket_id);
+            Err(AppError::Conflict("Ticket is no longer available".to_string()))
+        }
+    }
 }
 

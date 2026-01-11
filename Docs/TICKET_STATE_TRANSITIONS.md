@@ -24,7 +24,7 @@ This document defines the state transition flow for tickets from initial listing
 | Transition | Endpoint | HTTP Verb | Auth Method |
 |------------|----------|-----------|-------------|
 | unverified → verified | `/api/tickets/:id/verify` | `PATCH` | `ADMIN_API_KEY` (optional) |
-| verified → reserved | `/api/tickets/:id/reserve` | `POST` | `Bearer <JWT_TOKEN>` |
+| verified → reserved | `/api/tickets/:id/reserve` | `POST` | `<JWT_TOKEN>` |
 | reserved → paid | `/api/webhooks/stripe` | `POST` | Stripe webhook signature |
 
 ### Environment Variables
@@ -340,7 +340,7 @@ RETURNING id, price_at_reservation, reserved_at;
 
 ```
 POST /api/tickets/:id/reserve
-Authorization: Bearer <JWT_TOKEN>
+Authorization: <JWT_TOKEN>
 ```
 
 **Request:**

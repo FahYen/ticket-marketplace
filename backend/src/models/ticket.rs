@@ -30,6 +30,9 @@ pub struct Ticket {
     pub seat_number: String,
     pub price: i32,
     pub status: TicketStatus,
+    pub transfer_deadline: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_at_reservation: Option<i32>,
     #[serde(skip_serializing)]
     pub reserved_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing)]
@@ -67,5 +70,14 @@ pub struct ListTicketsResponse {
 #[derive(Debug, Deserialize)]
 pub struct MyListingsQuery {
     pub status: Option<String>,
+}
+
+/// Response for reserve ticket endpoint
+#[derive(Debug, Serialize)]
+pub struct ReserveTicketResponse {
+    pub ticket_id: Uuid,
+    pub status: TicketStatus,
+    pub price_at_reservation: i32,
+    pub reserved_at: DateTime<Utc>,
 }
 

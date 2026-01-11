@@ -14,6 +14,8 @@ CREATE TABLE tickets (
     seat_number VARCHAR(50) NOT NULL,
     price INTEGER NOT NULL CHECK (price >= 0),
     status ticket_status NOT NULL DEFAULT 'unverified',
+    transfer_deadline TIMESTAMPTZ NOT NULL,
+    price_at_reservation INTEGER,
     reserved_at TIMESTAMPTZ,
     reserved_by UUID REFERENCES users(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -27,6 +29,17 @@ CREATE INDEX idx_tickets_status ON tickets(status);
 CREATE INDEX idx_tickets_event_date ON tickets(event_date);
 CREATE INDEX idx_tickets_status_event_date ON tickets(status, event_date);
 CREATE INDEX idx_tickets_verified_status ON tickets(game_id) WHERE status = 'verified';
+
+-- Indexes for Stage 1: Verification (unverified → verified)
+-- Index for bot polling and verification matching
+CREATE INDEX idx_tickets_unverified_for_verification 
+ON tickets(transfer_deadline) 
+WHERE status = 'unverified';
+
+-- Index for deadline expiration cleanup
+CREATE INDEX idx_tickets_unverified_deadline 
+ON tickets(transfer_deadline) 
+WHERE status = 'unverified';
 
 -- Create trigger to automatically update updated_at
 CREATE TRIGGER update_tickets_updated_at BEFORE UPDATE ON tickets
