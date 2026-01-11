@@ -510,21 +510,6 @@ RETURNING id;
 - `ON CONFLICT DO NOTHING` makes the operation idempotent (safe to retry)
 - If the record already exists, we know we've already processed this webhook
 
-**Alternative Approach (More Explicit):**
-```sql
--- Check if we've already processed this payment intent
-SELECT id FROM payment_intents WHERE id = $payment_intent_id;
-
--- If exists, return 200 OK (idempotent) - skip all processing
--- If not, insert and continue processing
-INSERT INTO payment_intents (id, ticket_id, buyer_id, amount, status)
-VALUES ($payment_intent_id, $ticket_id, $buyer_id, $amount, 'capturable')
-ON CONFLICT (id) DO NOTHING
-RETURNING id;
-```
-
-The `ON CONFLICT` approach is preferred because it's atomic and handles race conditions better (if two webhook deliveries arrive simultaneously).
-
 ---
 
 ## Stage 4: Gatekeeper Check (reserved → paid)

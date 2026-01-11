@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:latest as builder
+FROM rust:1.92.0 as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \

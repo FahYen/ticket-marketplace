@@ -23,9 +23,13 @@ bcrypt.workspace = true
 # Data types
 uuid.workspace = true
 chrono.workspace = true
+time.workspace = true
 
 # Additional utilities
 anyhow.workspace = true
 thiserror.workspace = true
 rand.workspace = true
+
+# Stripe integration
+stripe.workspace = true
 

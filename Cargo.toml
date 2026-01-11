@@ -26,10 +26,14 @@ bcrypt = "0.15"
 
 # Data types
 uuid = { version = "1.6", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+time = "0.3.44"
 
 # Additional utilities
 anyhow = "1.0"
 thiserror = "1.0"
 rand = "0.8"
+
+# Stripe integration
+stripe = { package = "async-stripe", version = "0.30", features = ["webhook-events", "runtime-tokio-hyper"] }
 
