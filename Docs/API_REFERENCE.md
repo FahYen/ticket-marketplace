@@ -462,6 +462,329 @@ or
 
 ---
 
+### POST /api/tickets/:id/reserve
+Reserve a ticket for purchase (verified → reserved). This creates a temporary lock on the ticket while the buyer completes checkout.
+
+**CLI Command:**
+```bash
+curl -X POST http://localhost:3000/api/tickets/<ticket-id>/reserve \
+  -H "Authorization: your-jwt-token-here"
+```
+
+**Headers:**
+```
+Authorization: <JWT_TOKEN>
+```
+
+**Request:**
+No request body required.
+
+**Response (200 OK):**
+```json
+{
+  "ticket_id": "uuid-here",
+  "status": "Reserved",
+  "price_at_reservation": 15000,
+  "reserved_at": "2025-01-03T12:00:00Z"
+}
+```
+
+**Response (409 Conflict):**
+```json
+{
+  "error": "Ticket is no longer available"
+}
+```
+
+**Note:**
+- Requires authentication (JWT token)
+- Only tickets with status `verified` can be reserved (or `reserved` tickets with expired reservations)
+- The reservation locks the price at the time of reservation (`price_at_reservation`)
+- Reservations expire after `${TOTAL_RESERVATION_WINDOW_MINUTES}` minutes (default: 7 minutes)
+- After reservation, the frontend should create a Stripe Payment Intent and redirect to Stripe Checkout
+
+---
+
+## Webhooks
+
+### POST /api/webhooks/stripe
+Handle Stripe webhook events for payment processing. This endpoint processes `payment_intent.amount_capturable_updated` events to transition tickets from `reserved` to `paid` status.
+
+**Note:** This endpoint is called by Stripe, not by clients. For testing, use Stripe CLI (see Testing Stripe Webhooks section below).
+
+**Headers:**
+```
+Stripe-Signature: <stripe_signature>
+```
+
+**Request:**
+Stripe webhook payload (JSON format).
+
+**Response (200 OK):**
+```json
+{
+  "received": true,
+  "payment_intent_id": "pi_xxx"
+}
+```
+
+**Response (200 OK - Duplicate):**
+```json
+{
+  "received": true,
+  "duplicate": true
+}
+```
+
+**Note:**
+- Webhook signature verification is required (handled automatically by Stripe CLI)
+- Only processes `payment_intent.amount_capturable_updated` events
+- Idempotent: duplicate webhooks are safely ignored
+- Performs gatekeeper check to validate reservation is still valid
+- If reservation is valid: captures payment and updates ticket status to `paid`
+- If reservation expired: cancels payment intent and releases authorization hold
+
+---
+
+## Testing Stripe Webhooks
+
+To test the Stripe webhook integration locally, use Stripe CLI to forward webhook events to your local server.
+
+### Prerequisites
+
+1. **Install Stripe CLI:**
+   ```bash
+   # macOS (using Homebrew)
+   brew install stripe/stripe-cli/stripe
+   
+   # Linux/Windows: Download from https://stripe.com/docs/stripe-cli
+   ```
+
+2. **Login to Stripe CLI:**
+   ```bash
+   stripe login
+   ```
+
+3. **Start your local server:**
+   ```bash
+   # Ensure your backend is running on http://localhost:3000
+   ```
+
+### Testing with Stripe CLI
+
+#### 1. Forward Webhooks to Local Server
+
+In a separate terminal, start the Stripe CLI listener to forward webhooks to your local endpoint:
+
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+This will:
+- Display a webhook signing secret (e.g., `whsec_xxx`)
+- Forward all webhook events from your Stripe account to your local endpoint
+- Sign webhooks with the provided secret (configure this in your `.env` as `STRIPE_WEBHOOK_SECRET`)
+
+**Important:** Use the webhook signing secret shown by `stripe listen` in your `.env` file for local testing.
+
+#### 2. Trigger Payment Intent Events
+
+In another terminal, trigger the `payment_intent.amount_capturable_updated` event:
+
+```bash
+# Create a test payment intent with metadata matching your ticket structure
+stripe payment_intents create \
+  --amount=15000 \
+  --currency=usd \
+  --metadata[ticket_id]=<ticket-uuid> \
+  --metadata[buyer_id]=<buyer-uuid> \
+  --metadata[reserved_at]=2025-01-03T12:00:00Z \
+  --capture-method=manual
+```
+
+Then confirm it with a test card to trigger the webhook:
+
+```bash
+# Confirm the payment intent (replace pi_xxx with the ID from previous command)
+stripe payment_intents confirm <payment-intent-id> \
+  --payment-method=pm_card_visa
+```
+
+#### 3. Alternative: Use Stripe CLI Trigger (Simplified Testing)
+
+For simpler testing, you can directly trigger the webhook event:
+
+```bash
+# Trigger the payment_intent.amount_capturable_updated event
+stripe trigger payment_intent.amount_capturable_updated
+```
+
+**Note:** You may need to customize the event payload to include your metadata (ticket_id, buyer_id, reserved_at). Check Stripe CLI documentation for advanced triggering options.
+
+### Testing Complete Flow
+
+See the "Testing Ticket State Transitions" section below for a complete end-to-end testing flow.
+
+---
+
+## Testing Ticket State Transitions
+
+This section provides a complete testing workflow for the ticket state transition flow: `unverified → verified → reserved → paid`.
+
+### Prerequisites
+
+1. Backend server running on `http://localhost:3000`
+2. Database with at least one game created
+3. Two user accounts (seller and buyer)
+4. Stripe CLI installed and configured (for webhook testing)
+5. Environment variables configured (especially `ADMIN_API_KEY` and `STRIPE_WEBHOOK_SECRET`)
+
+### Step 1: Create Ticket (unverified)
+
+```bash
+# Register seller account
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "seller@msu.edu",
+    "password": "password123"
+  }'
+
+# Verify email (use code from email)
+curl -X POST http://localhost:3000/api/auth/verify-email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "seller@msu.edu",
+    "code": "123456"
+  }'
+
+# Login to get JWT token
+SELLER_TOKEN=$(curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "seller@msu.edu",
+    "password": "password123"
+  }' | jq -r '.token')
+
+# Create ticket (status: unverified)
+curl -X POST http://localhost:3000/api/tickets \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $SELLER_TOKEN" \
+  -d '{
+    "game_id": "<game-uuid>",
+    "level": "STUD",
+    "seat_section": "GEN",
+    "seat_row": "128",
+    "seat_number": "28",
+    "price": 15000
+  }'
+```
+
+**Expected Response:** Ticket with `status: "Unverified"`
+
+### Step 2: Verify Ticket (unverified → verified)
+
+```bash
+# Verify ticket using admin API key
+curl -X PATCH http://localhost:3000/api/tickets/<ticket-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: <ADMIN_API_KEY>" \
+  -d '{
+    "status": "verified"
+  }'
+```
+
+**Expected Response:** Ticket with `status: "Verified"`
+
+### Step 3: Reserve Ticket (verified → reserved)
+
+```bash
+# Register buyer account
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "buyer@msu.edu",
+    "password": "password123"
+  }'
+
+# Verify email and login
+BUYER_TOKEN=$(curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "buyer@msu.edu",
+    "password": "password123"
+  }' | jq -r '.token')
+
+# Reserve ticket
+curl -X POST http://localhost:3000/api/tickets/<ticket-id>/reserve \
+  -H "Authorization: $BUYER_TOKEN"
+```
+
+**Expected Response:**
+```json
+{
+  "ticket_id": "uuid-here",
+  "status": "Reserved",
+  "price_at_reservation": 15000,
+  "reserved_at": "2025-01-03T12:00:00Z"
+}
+```
+
+### Step 4: Create Stripe Payment Intent
+
+After reserving the ticket, create a Stripe Payment Intent (this would normally be done by the frontend):
+
+```bash
+# Using Stripe CLI
+stripe payment_intents create \
+  --amount=15000 \
+  --currency=usd \
+  --metadata[ticket_id]=<ticket-uuid> \
+  --metadata[buyer_id]=<buyer-uuid> \
+  --metadata[reserved_at]=2025-01-03T12:00:00Z \
+  --capture-method=manual
+```
+
+**Note:** In production, the frontend creates the Payment Intent using Stripe.js after receiving the reservation response.
+
+### Step 5: Start Stripe CLI Listener
+
+In a separate terminal, start the Stripe CLI listener:
+
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+**Important:** Copy the webhook signing secret (e.g., `whsec_xxx`) and ensure it matches your `STRIPE_WEBHOOK_SECRET` environment variable.
+
+### Step 6: Confirm Payment Intent (reserved → paid)
+
+```bash
+# Confirm the payment intent with a test card
+stripe payment_intents confirm <payment-intent-id> \
+  --payment-method=pm_card_visa
+```
+
+This will trigger the `payment_intent.amount_capturable_updated` webhook event, which your backend will receive and process.
+
+**Expected Result:**
+- Webhook is received by backend
+- Ticket status changes from `reserved` to `paid`
+- Payment is captured from buyer
+- Payment intent status is updated to `captured`
+
+### Verify Final State
+
+```bash
+# Check ticket status
+curl http://localhost:3000/api/tickets/my-listings \
+  -H "Authorization: $SELLER_TOKEN" | jq '.tickets[] | select(.id == "<ticket-id>")'
+```
+
+**Expected Response:** Ticket with `status: "Paid"`
+
+---
+
 ## Error Responses
 
 All error responses follow this format:
@@ -478,5 +801,6 @@ All error responses follow this format:
 - `400 Bad Request` - Invalid input
 - `401 Unauthorized` - Missing or invalid authentication
 - `404 Not Found` - Resource doesn't exist
+- `409 Conflict` - Resource conflict (e.g., ticket no longer available)
 - `500 Internal Server Error` - Server error
 
