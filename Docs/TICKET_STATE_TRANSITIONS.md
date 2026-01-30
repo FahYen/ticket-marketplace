@@ -1,5 +1,5 @@
 # Ticket State Transition Blueprint
-## unverified → verified → reserved → paid
+## unverified → verifying → verified → reserved → paid
 
 **Version:** 1.0  
 **Last Updated:** 2025-01-XX  
@@ -23,7 +23,9 @@ This document defines the state transition flow for tickets from initial listing
 
 | Transition | Endpoint | HTTP Verb | Auth Method |
 |------------|----------|-----------|-------------|
-| unverified → verified | `/api/tickets/:id/verify` | `PATCH` | `ADMIN_API_KEY` (optional) |
+| unverified → verifying | `/api/tickets/claim` | `POST` | `BOT_API_KEY` |
+| verifying → verified | `/api/tickets/:id/verify` | `PATCH` | `BOT_API_KEY` |
+| verifying → unverified | `/api/tickets/:id/claim` | `DELETE` | `BOT_API_KEY` |
 | verified → reserved | `/api/tickets/:id/reserve` | `POST` | `<JWT_TOKEN>` |
 | reserved → paid | `/api/webhooks/stripe` | `POST` | Stripe webhook signature |
 
@@ -31,12 +33,15 @@ This document defines the state transition flow for tickets from initial listing
 
 All time durations are configurable via environment variables:
 
+- `BOT_API_KEY` - API key for bot authentication (required for claim/verify endpoints)
 - `TRANSFER_DEADLINE_HOURS` - Time seller has to send transfer request (default: 24)
+- `VERIFYING_TIMEOUT_MINUTES` - Max time a ticket can stay in `verifying` status before being reset (default: 10)
 - `RESERVATION_WINDOW_MINUTES` - Time buyer has to complete checkout (default: 5)
 - `GREY_PERIOD_MINUTES` - Buffer time for webhook processing delays (default: 2)
 - `TOTAL_RESERVATION_WINDOW_MINUTES` - Total reservation validity (RESERVATION_WINDOW + GREY_PERIOD, default: 7)
 - `BOT_POLLING_INTERVAL_SECONDS` - How often bot polls for incoming transfers (default: 20)
 - `TRANSFER_DEADLINE_CLEANUP_INTERVAL_HOURS` - How often to check for expired transfer deadlines (default: 1)
+- `VERIFYING_CLEANUP_INTERVAL_SECONDS` - How often to check for stuck `verifying` tickets (default: 60)
 - `RESERVATION_CLEANUP_INTERVAL_SECONDS` - How often to check for expired reservations (default: 60)
 
 ---
@@ -113,7 +118,7 @@ CREATE INDEX idx_payment_intents_status ON payment_intents(status);
 
 ---
 
-## Stage 1: Verification (unverified → verified)
+## Stage 1: Verification (unverified → verifying → verified)
 
 ### Purpose
 Ensure the seller transfers the ticket to the custodian Paciolan account within `${TRANSFER_DEADLINE_HOURS}` hours of listing. The bot waits for incoming transfer requests and accepts them if they match the ticket details.
@@ -123,8 +128,72 @@ Ensure the seller transfers the ticket to the custodian Paciolan account within 
 1. **Seller lists ticket** → Status: `unverified`, `transfer_deadline` = NOW() + `${TRANSFER_DEADLINE_HOURS}` hours
 2. **Seller sends transfer request** → Seller manually initiates transfer in Paciolan to custodian account
 3. **Bot polls for incoming transfers** → Bot checks Paciolan account for pending transfer requests
-4. **Transfer matches ticket** → Bot accepts transfer, ticket becomes `verified`
-5. **Transfer deadline expires** → If no transfer received within `${TRANSFER_DEADLINE_HOURS}` hours, ticket is `cancelled`
+4. **Bot detects transfer** → Bot calls backend API to claim ticket (`POST /api/tickets/claim`)
+5. **Backend validates & claims** → If not expired, marks as `verifying` and returns success; if expired, returns error
+6. **Bot accepts or rejects** → On success, bot accepts transfer in Paciolan; on error, bot rejects transfer
+7. **Bot confirms verification** → After accepting, bot calls `PATCH /api/tickets/:id/verify` to complete
+8. **Transfer deadline expires** → If no transfer received within `${TRANSFER_DEADLINE_HOURS}` hours, ticket is deleted
+
+### Bot-Backend Handshake Pattern
+
+The verification process uses a **two-phase handshake** between the bot and backend API:
+
+```
+┌─────────┐                    ┌─────────┐                    ┌──────────┐
+│   Bot   │                    │ Backend │                    │ Paciolan │
+└────┬────┘                    └────┬────┘                    └────┬─────┘
+     │                              │                              │
+     │  1. Detect incoming transfer │                              │
+     │◄─────────────────────────────┼──────────────────────────────│
+     │                              │                              │
+     │  2. POST /api/tickets/claim  │                              │
+     │  {event, section, row, seat} │                              │
+     │─────────────────────────────►│                              │
+     │                              │                              │
+     │                              │ 3. Check if expired          │
+     │                              │    If expired: return error  │
+     │                              │    If valid: mark 'verifying'│
+     │                              │                              │
+     │  4. Response                 │                              │
+     │◄─────────────────────────────│                              │
+     │                              │                              │
+     │  [If error: reject transfer] │                              │
+     │──────────────────────────────┼─────────────────────────────►│
+     │                              │                              │
+     │  [If success: accept transfer]                              │
+     │──────────────────────────────┼─────────────────────────────►│
+     │                              │                              │
+     │  5. PATCH /api/tickets/:id/verify                           │
+     │─────────────────────────────►│                              │
+     │                              │                              │
+     │                              │ 6. Mark 'verified'           │
+     │                              │                              │
+     │  7. Response (success)       │                              │
+     │◄─────────────────────────────│                              │
+     │                              │                              │
+```
+
+**Why This Handshake Prevents Race Conditions:**
+
+1. **Bot never accepts transfer without backend confirmation** - The backend atomically checks expiration AND claims the ticket in one operation
+2. **If ticket is expired, bot rejects transfer** - No wasted Paciolan accepts for tickets that will be deleted
+3. **`verifying` status protects during Paciolan operation** - Cleanup job skips tickets in `verifying` status
+4. **Second API call confirms completion** - Only marks `verified` after Paciolan accept succeeds
+
+### Why the `verifying` Intermediate Status?
+
+The verification process involves an external operation (accepting the transfer in Paciolan) that takes time. Without an intermediate status, there's a race condition:
+
+1. Bot finds matching `unverified` ticket
+2. Bot starts accepting transfer in Paciolan (takes 5-30 seconds)
+3. Meanwhile, `transfer_deadline` expires
+4. Cleanup job deletes the ticket
+5. Bot finishes accepting transfer, but ticket is gone!
+
+The `verifying` status solves this by:
+- **Claiming the ticket atomically** before starting the external operation
+- **Protecting it from cleanup** while the bot processes the transfer
+- **Allowing recovery** if the bot crashes (stuck `verifying` tickets are reset after `${VERIFYING_TIMEOUT_MINUTES}` minutes)
 
 ### Process Flow
 
@@ -156,59 +225,155 @@ The bot continuously polls the Paciolan custodian account for incoming transfer 
 1. Logs into Paciolan custodian account
 2. Checks for pending transfer requests
 3. For each pending transfer, extracts ticket details (event, section, row, seat)
-4. Matches against `unverified` tickets in database
+4. Calls backend API to attempt to claim the ticket (see Section 1.3)
 
 #### 1.3 Success Path (Transfer Matches Ticket)
 
-When bot finds a matching transfer request:
+When bot detects an incoming transfer request in Paciolan:
 
-**Step 1: Find Matching Ticket**
-```sql
--- Find unverified ticket matching transfer details
--- Note: Tickets are unique per (game_id, level, seat_section, seat_row, seat_number)
--- This query will return 0 or 1 row
--- FOR UPDATE SKIP LOCKED prevents conflicts with deadline cleanup job
-SELECT id, seller_id, event_name, seat_section, seat_row, seat_number
-FROM tickets
-WHERE status = 'unverified'
-  AND event_name = $event_name
-  AND seat_section = $seat_section
-  AND seat_row = $seat_row
-  AND seat_number = $seat_number
-  AND transfer_deadline > NOW()  -- Still within deadline
-ORDER BY created_at ASC
-LIMIT 1
-FOR UPDATE SKIP LOCKED;
+**Step 1: Bot Calls Claim API (unverified → verifying)**
+
+Bot sends the transfer details to the backend to attempt to claim the ticket:
+
+```
+POST /api/tickets/claim
+Authorization: Bearer <BOT_API_KEY>
+Content-Type: application/json
+
+{
+  "event_name": "USC vs UCLA Football",
+  "seat_section": "Section 101",
+  "seat_row": "A",
+  "seat_number": "12"
+}
 ```
 
-**Step 2: Accept Transfer in Paciolan**
+**Backend Implementation (Atomic Claim):**
+```sql
+-- Atomically claim the ticket by setting status to 'verifying'
+-- This single query finds AND claims the ticket in one atomic operation
+-- FOR UPDATE SKIP LOCKED prevents conflicts with deadline cleanup job
+UPDATE tickets
+SET status = 'verifying',
+    updated_at = NOW()
+WHERE id = (
+    SELECT id FROM tickets
+    WHERE status = 'unverified'
+      AND event_name = $event_name
+      AND seat_section = $seat_section
+      AND seat_row = $seat_row
+      AND seat_number = $seat_number
+      AND transfer_deadline > NOW()  -- Still within deadline
+    ORDER BY created_at ASC
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, seller_id, event_name, seat_section, seat_row, seat_number;
+```
+
+**Response (200 OK - Ticket Claimed):**
+```json
+{
+  "ticket_id": "uuid",
+  "status": "verifying",
+  "event_name": "USC vs UCLA Football",
+  "seat_section": "Section 101",
+  "seat_row": "A",
+  "seat_number": "12",
+  "seller_id": "uuid"
+}
+```
+
+**Response (404 Not Found - No Matching Ticket or Expired):**
+```json
+{
+  "error": "No matching unverified ticket found or ticket has expired"
+}
+```
+
+**Bot Action Based on Response:**
+- **200 OK** → Proceed to Step 2 (accept transfer in Paciolan)
+- **404 Not Found** → **Reject/ignore the transfer in Paciolan** (ticket expired or doesn't exist)
+
+**Step 2: Bot Accepts Transfer in Paciolan**
+
+Only after receiving 200 OK from the claim API, the bot proceeds:
+
 - Bot clicks "Accept" on the transfer request in Paciolan UI
 - Transfer completes in external system
+- This step may take 5-30 seconds
 
-**Step 3: Atomic Status Update**
+**The ticket is protected during this step** - cleanup jobs skip `verifying` tickets.
+
+**Step 3: Bot Calls Verify API (verifying → verified)**
+
+After successfully accepting the transfer in Paciolan:
+
+```
+PATCH /api/tickets/:ticket_id/verify
+Authorization: Bearer <BOT_API_KEY>
+```
+
+**Backend Implementation:**
 ```sql
 UPDATE tickets
 SET status = 'verified',
     updated_at = NOW()
 WHERE id = $ticket_id
-  AND status = 'unverified'
-  AND transfer_deadline > NOW()  -- Double-check deadline
+  AND status = 'verifying'
 RETURNING id;
 ```
 
-**Guardrail**: If 0 rows updated, either:
-- Another process already verified it (race condition)
-- Deadline expired between match and update
+**Response (200 OK):**
+```json
+{
+  "ticket_id": "uuid",
+  "status": "verified",
+  "message": "Ticket verified successfully"
+}
+```
 
-**Notification**: Email sent to seller: "Your ticket has been verified and is now available for sale!"
+**Response (409 Conflict - Ticket No Longer Verifying):**
+```json
+{
+  "error": "Ticket is not in verifying status (may have been reset due to timeout)"
+}
+```
+
+**Guardrail**: If 409 returned, either:
+- Ticket was reset to `unverified` by stuck cleanup (bot took too long)
+- Another process already completed verification (shouldn't happen)
+
+**Step 4: Bot Handles Paciolan Failure (verifying → unverified)**
+
+If Step 2 fails (Paciolan error, network issue, etc.), bot should roll back the claim:
+
+```
+DELETE /api/tickets/:ticket_id/claim
+Authorization: Bearer <BOT_API_KEY>
+```
+
+**Backend Implementation:**
+```sql
+UPDATE tickets
+SET status = 'unverified',
+    updated_at = NOW()
+WHERE id = $ticket_id
+  AND status = 'verifying';
+```
+
+This allows another bot instance or retry to process the ticket.
+
+**Notification**: On successful verification, email sent to seller: "Your ticket has been verified and is now available for sale!"
 
 #### 1.4 Failure Path (Transfer Deadline Expires)
 
 A background job (or bot) periodically checks for expired transfer deadlines:
 
-**Cleanup Query:**
+**Cleanup Query (Unverified Tickets Only):**
 ```sql
 -- Find tickets that passed their transfer deadline
+-- IMPORTANT: Only delete 'unverified' tickets, NOT 'verifying'
 -- FOR UPDATE SKIP LOCKED prevents conflicts if bot is processing a transfer simultaneously
 SELECT id, seller_id, event_name, created_at
 FROM tickets
@@ -238,7 +403,42 @@ WHERE id = $ticket_id
 - "Your ticket listing has been removed because the transfer was not received within ${TRANSFER_DEADLINE_HOURS} hours."
 - "Please try listing again and ensure you send the transfer request immediately after creating the listing."
 
-#### 1.5 Edge Cases
+#### 1.5 Stuck `verifying` Tickets Cleanup
+
+A separate cleanup process handles tickets that get stuck in `verifying` status (e.g., bot crashed mid-process):
+
+**Stuck Cleanup Query:**
+```sql
+-- Find tickets stuck in 'verifying' status for too long
+-- Application code calculates: NOW() - INTERVAL '1 minute' * VERIFYING_TIMEOUT_MINUTES
+-- $verifying_timeout = NOW() - INTERVAL '1 minute' * VERIFYING_TIMEOUT_MINUTES
+SELECT id, seller_id, event_name, updated_at
+FROM tickets
+WHERE status = 'verifying'
+  AND updated_at < $verifying_timeout
+FOR UPDATE SKIP LOCKED;
+```
+
+**Reset to Unverified:**
+```sql
+-- Reset stuck verifying tickets back to unverified
+-- This allows another bot instance to retry, or deadline cleanup to eventually delete
+UPDATE tickets
+SET status = 'unverified',
+    updated_at = NOW()
+WHERE id = $ticket_id
+  AND status = 'verifying'
+  AND updated_at < $verifying_timeout;
+```
+
+**Why Reset Instead of Delete?**
+- The seller may have actually sent the transfer, but the bot crashed before accepting it
+- Resetting gives the transfer another chance to be processed on the next poll
+- If the transfer deadline has also expired, the regular cleanup will delete it
+
+**Timing**: This cleanup should run frequently (e.g., every 60 seconds) with a `VERIFYING_TIMEOUT_MINUTES` of 10 minutes.
+
+#### 1.6 Edge Cases
 
 **Note**: Tickets are unique - for the same seat number, row, level, and game, there is only one ticket. This simplifies edge case handling.
 
@@ -247,16 +447,24 @@ WHERE id = $ticket_id
 From the backend's perspective, the bot rejects/ignores the transfer in the following scenarios (all result in the same action):
 
 1. **No Matching Ticket Found**: Transfer details (event_name, seat_section, seat_row, seat_number) don't match any `unverified` ticket
-   - Bot cannot find matching ticket in database
-   - Action: Reject transfer, ticket remains `unverified` until deadline expires
+   - Bot cannot find matching ticket in database (claim query returns 0 rows)
+   - Action: Reject transfer in Paciolan
 
-2. **Ticket Already Verified**: Bot finds matching ticket, but atomic update returns 0 rows (ticket already `verified`)
+2. **Ticket Already Being Processed**: Another bot instance already claimed the ticket (status is `verifying`)
+   - The claim query returns 0 rows because ticket is not `unverified`
+   - Action: Reject transfer (ticket is being processed by another bot instance)
+
+3. **Ticket Already Verified**: Bot finds matching ticket, but status is already `verified`
    - Can happen if seller sent multiple transfer requests
    - Action: Reject transfer (ticket already processed)
 
-3. **Transfer Arrives After Deadline**: Bot finds matching ticket, but `transfer_deadline <= NOW()` check fails
-   - Ticket deadline expired
+4. **Transfer Arrives After Deadline**: Claim query returns 0 rows because `transfer_deadline <= NOW()`
+   - Ticket deadline expired before bot could claim it
    - Action: Reject transfer, ticket will be deleted by cleanup job (false listing)
+
+5. **Paciolan Accept Fails After Claim**: Ticket claimed (status: `verifying`), but Paciolan operation fails
+   - Bot should reset ticket to `unverified` (see Step 4 in Section 1.3)
+   - Action: Log error, reset ticket status, retry on next poll cycle
 
 ### API Endpoint
 
@@ -612,12 +820,41 @@ RETURNING id, price_at_reservation;
 
 | From State | To State | Trigger | Atomic Check | Price Lock |
 |------------|----------|---------|--------------|------------|
-| `unverified` | `verified` | Bot accepts transfer | `status = 'unverified' AND transfer_deadline > NOW()` | N/A |
+| `unverified` | `verifying` | Bot claims ticket | `status = 'unverified' AND transfer_deadline > NOW()` | N/A |
+| `verifying` | `verified` | Bot completes Paciolan accept | `status = 'verifying'` | N/A |
+| `verifying` | `unverified` | Bot fails / timeout | `status = 'verifying' AND updated_at < timeout` | N/A |
 | `unverified` | *deleted* | Transfer deadline expires | `status = 'unverified' AND transfer_deadline <= NOW()` | N/A |
 | `verified` | `reserved` | Buyer "Buy" click | `status = 'verified' OR (reserved AND expired)` | ✅ `price_at_reservation` |
 | `reserved` | `paid` | Stripe webhook | `status = 'reserved' AND buyer matches AND within ${TOTAL_RESERVATION_WINDOW_MINUTES}min` | Uses `price_at_reservation` |
 
 **Note**: Unverified tickets that fail verification are deleted (not transitioned to `cancelled`). The `cancelled` status is reserved for legitimate tickets cancelled after verification (e.g., seller cancels verified listing, refund scenarios).
+
+**State Diagram:**
+```
+                    ┌──────────────┐
+                    │  unverified  │
+                    └──────┬───────┘
+                           │ Bot claims (transfer found)
+                           ▼
+   (timeout/failure) ┌──────────────┐
+        ┌────────────│  verifying   │
+        │            └──────┬───────┘
+        │                   │ Bot accepts transfer in Paciolan
+        ▼                   ▼
+┌──────────────┐     ┌──────────────┐
+│  unverified  │     │   verified   │
+│  (or delete) │     └──────┬───────┘
+└──────────────┘            │ Buyer reserves
+                            ▼
+                     ┌──────────────┐
+                     │   reserved   │
+                     └──────┬───────┘
+                            │ Stripe webhook (funds captured)
+                            ▼
+                     ┌──────────────┐
+                     │     paid     │
+                     └──────────────┘
+```
 
 ---
 
@@ -626,30 +863,40 @@ RETURNING id, price_at_reservation;
 | Window | Duration (Env Var) | Default | Purpose |
 |--------|-------------------|---------|---------|
 | **Transfer Deadline** | `${TRANSFER_DEADLINE_HOURS}` hours | 24 hours | Seller must send transfer request within this window |
+| **Verifying Timeout** | `${VERIFYING_TIMEOUT_MINUTES}` minutes | 10 minutes | Max time ticket can stay in `verifying` before reset |
 | **Reservation Window** | `${RESERVATION_WINDOW_MINUTES}` minutes | 5 minutes | Buyer has time to complete checkout |
 | **Grey Period** | `${GREY_PERIOD_MINUTES}` minutes | 2 minutes | Buffer for webhook processing delays |
 | **Total Reservation Window** | `${TOTAL_RESERVATION_WINDOW_MINUTES}` minutes | 7 minutes | Total time reservation is valid (RESERVATION_WINDOW + GREY_PERIOD) |
 | **Bot Polling Interval** | `${BOT_POLLING_INTERVAL_SECONDS}` seconds | 20 seconds | How often bot polls for incoming transfers |
 | **Transfer Deadline Cleanup Interval** | `${TRANSFER_DEADLINE_CLEANUP_INTERVAL_HOURS}` hours | 1 hour | How often to check for expired transfer deadlines |
+| **Verifying Cleanup Interval** | `${VERIFYING_CLEANUP_INTERVAL_SECONDS}` seconds | 60 seconds | How often to check for stuck `verifying` tickets |
 | **Reservation Cleanup Interval** | `${RESERVATION_CLEANUP_INTERVAL_SECONDS}` seconds | 60 seconds | How often to check for expired reservations |
 
 ---
 
 ## Race Condition Protections
 
-### 1. Double Reservation Prevention
+### 1. Verification Claim Protection
+- **Mechanism**: Atomic `UPDATE ... WHERE` with subquery and `FOR UPDATE SKIP LOCKED` to claim ticket as `verifying`
+- **Result**: Only first bot instance claims the ticket; others skip it
+
+### 2. Verification vs Cleanup Race Prevention
+- **Mechanism**: `verifying` intermediate status protects ticket during external Paciolan operation
+- **Result**: Cleanup job cannot delete ticket while bot is accepting transfer
+
+### 3. Double Reservation Prevention
 - **Mechanism**: Atomic `UPDATE ... WHERE` with status check
 - **Result**: Only first buyer succeeds, others get `409 Conflict`
 
-### 2. Late Webhook Prevention
+### 4. Late Webhook Prevention
 - **Mechanism**: `reserved_at > $expiry_time` check where `$expiry_time = NOW() - INTERVAL '1 minute' * TOTAL_RESERVATION_WINDOW_MINUTES`
 - **Result**: Expired reservations cannot transition to `paid`
 
-### 3. Process Conflict Prevention
-- **Mechanism**: `FOR UPDATE SKIP LOCKED` in transfer matching, deadline cleanup, and reservation cleanup
+### 5. Process Conflict Prevention
+- **Mechanism**: `FOR UPDATE SKIP LOCKED` in transfer matching, deadline cleanup, verifying cleanup, and reservation cleanup
 - **Result**: Prevents conflicts between bot verification process, deadline cleanup job, and reservation cleanup job when processing the same ticket
 
-### 4. Webhook Idempotency
+### 6. Webhook Idempotency
 - **Mechanism**: `payment_intents` table with unique constraint
 - **Result**: Duplicate webhooks are safely ignored
 
@@ -681,10 +928,12 @@ RETURNING id, price_at_reservation;
 1. **Transfer Success Rate**: `verified / (verified + deleted)` within transfer deadline
 2. **Transfer Time**: Average time from listing to transfer acceptance
 3. **Deadline Expiration Rate**: Tickets deleted due to missed transfer deadline (false listings)
-4. **Reservation Success Rate**: Successful reservations / total attempts
-5. **Payment Capture Rate**: `paid / reserved`
-6. **Webhook Processing Time**: Time from webhook receipt to status update
-7. **Expired Reservations**: Count of reservations that expired before payment
+4. **Claim Success Rate**: Successful claims / total claim attempts (tracks bot-backend handshake)
+5. **Verifying Timeout Rate**: Tickets reset from `verifying` to `unverified` (indicates bot failures)
+6. **Reservation Success Rate**: Successful reservations / total attempts
+7. **Payment Capture Rate**: `paid / reserved`
+8. **Webhook Processing Time**: Time from webhook receipt to status update
+9. **Expired Reservations**: Count of reservations that expired before payment
 
 ### Logging Requirements
 
@@ -701,9 +950,9 @@ All state transitions should log:
 ## Security Checklist
 
 - [ ] JWT authentication required for reservation endpoint
+- [ ] Bot API key authentication for claim/verify endpoints
 - [ ] Stripe webhook signature verification
 - [ ] Rate limiting on reservation endpoint
-- [ ] Admin API key for verification endpoint
 - [ ] SQL injection prevention (use parameterized queries)
 - [ ] Input validation on all endpoints
 - [ ] CORS configuration
@@ -738,9 +987,20 @@ All state transitions should log:
 Add these to your `.env` file during implementation:
 
 ```bash
+# Bot Authentication
+# API key for bot to authenticate with backend (claim/verify endpoints)
+# Generate a secure random string (e.g., openssl rand -hex 32)
+BOT_API_KEY=your-secure-bot-api-key-here
+
 # Transfer Deadline Configuration
 # Time (in hours) seller has to send transfer request after listing
 TRANSFER_DEADLINE_HOURS=24
+
+# Verifying Timeout Configuration
+# Max time (in minutes) a ticket can stay in 'verifying' status before reset
+# Should be long enough for bot to complete Paciolan operation (typically 1-2 min)
+# but short enough to recover from bot crashes quickly
+VERIFYING_TIMEOUT_MINUTES=10
 
 # Reservation Window Configuration
 # Time (in minutes) buyer has to complete checkout
@@ -762,14 +1022,18 @@ BOT_POLLING_INTERVAL_SECONDS=20
 # Cleanup Configuration
 # How often (in hours) to check for expired transfer deadlines
 TRANSFER_DEADLINE_CLEANUP_INTERVAL_HOURS=1
+# How often (in seconds) to check for stuck 'verifying' tickets
+VERIFYING_CLEANUP_INTERVAL_SECONDS=60
 # How often (in seconds) to check for expired reservations
 RESERVATION_CLEANUP_INTERVAL_SECONDS=60
 ```
 
 ### Implementation Notes
 
-- All time values are in **minutes** except `TRANSFER_DEADLINE_HOURS` and `TRANSFER_DEADLINE_CLEANUP_INTERVAL_HOURS` which are in **hours** and `BOT_POLLING_INTERVAL_SECONDS` and `RESERVATION_CLEANUP_INTERVAL_SECONDS` which are in **seconds**
+- `BOT_API_KEY` should be a secure random string shared between backend and bot
+- All time values are in **minutes** except `TRANSFER_DEADLINE_HOURS` and `TRANSFER_DEADLINE_CLEANUP_INTERVAL_HOURS` which are in **hours** and `BOT_POLLING_INTERVAL_SECONDS`, `VERIFYING_CLEANUP_INTERVAL_SECONDS`, and `RESERVATION_CLEANUP_INTERVAL_SECONDS` which are in **seconds**
 - `TOTAL_RESERVATION_WINDOW_MINUTES` should be calculated as `RESERVATION_WINDOW_MINUTES + GREY_PERIOD_MINUTES` in application code
+- `VERIFYING_TIMEOUT_MINUTES` should be generous (10 min default) to handle slow Paciolan responses, but short enough to recover from bot crashes
 - Application code should read these values at startup and use them in SQL queries via parameterized queries
 - Consider validating that `TOTAL_RESERVATION_WINDOW_MINUTES >= RESERVATION_WINDOW_MINUTES + GREY_PERIOD_MINUTES` at startup
 
