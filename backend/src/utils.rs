@@ -3,4 +3,5 @@ pub mod email;
 pub mod jwt;
 pub mod password;
 pub mod stripe;
+pub mod cleanup;
 

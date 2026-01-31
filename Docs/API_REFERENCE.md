@@ -1,3 +1,184 @@
+# API Reference (Linear Local Test Flow)
+
+Base URL: `http://localhost:3000`
+
+This guide is a single, copy/paste-friendly flow that takes you from registering users through the full ticket lifecycle: `unverified → verifying → verified → reserved → paid`, including bot claim/verify and Stripe webhook capture.
+
+## Prerequisites
+- Tools: `curl`, `jq`, `stripe` CLI.
+- Services running locally on `:3000` (backend) and Postgres via `docker-compose up -d`.
+- Environment values (from `.env`):
+```bash
+export BASE_URL=http://localhost:3000
+export ADMIN_API_KEY=change-me-admin
+export BOT_API_KEY=change-me-bot
+export STRIPE_SECRET_KEY=sk_test_xxx
+export STRIPE_WEBHOOK_SECRET=whsec_xxx
+```
+
+## 1) Health Check
+```bash
+curl $BASE_URL/health
+```
+
+## 2) Register + Verify + Login (Seller)
+```bash
+# Register seller
+SELLER_CODE=$(curl -s -X POST $BASE_URL/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"seller@msu.edu","password":"password123"}' | jq -r '.verification_code')
+
+# Verify seller email
+curl -s -X POST $BASE_URL/api/auth/verify-email \
+  -H "Content-Type: application/json" \
+  -d '{"email":"seller@msu.edu","code":"'"$SELLER_CODE"'"}'
+
+# Login seller
+SELLER_LOGIN=$(curl -s -X POST $BASE_URL/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"seller@msu.edu","password":"password123"}')
+SELLER_TOKEN=$(echo "$SELLER_LOGIN" | jq -r '.token')
+SELLER_ID=$(echo "$SELLER_LOGIN" | jq -r '.user.id')
+```
+
+## 3) Admin Creates a Game
+```bash
+GAME=$(curl -s -X POST $BASE_URL/api/games \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $ADMIN_API_KEY" \
+  -d '{
+    "sport_type": "football",
+    "name": "MSU vs Michigan",
+    "game_time": "2026-12-01T20:00:00Z"
+  }')
+GAME_ID=$(echo "$GAME" | jq -r '.id')
+GAME_NAME=$(echo "$GAME" | jq -r '.name')
+```
+
+## 4) Seller Creates Ticket (unverified)
+```bash
+TICKET=$(curl -s -X POST $BASE_URL/api/tickets \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $SELLER_TOKEN" \
+  -d '{
+    "game_id": "'"$GAME_ID"'",
+    "level": "STUD",
+    "seat_section": "GEN",
+    "seat_row": "128",
+    "seat_number": "28",
+    "price": 15000
+  }')
+TICKET_ID=$(echo "$TICKET" | jq -r '.id')
+EVENT_NAME=$(echo "$TICKET" | jq -r '.event_name')
+SEAT_SECTION=$(echo "$TICKET" | jq -r '.seat_section')
+SEAT_ROW=$(echo "$TICKET" | jq -r '.seat_row')
+SEAT_NUMBER=$(echo "$TICKET" | jq -r '.seat_number')
+```
+
+## 5) Bot Claims and Verifies (unverified → verifying → verified)
+```bash
+# Bot claim (unverified → verifying)
+CLAIM=$(curl -s -X POST $BASE_URL/api/tickets/claim \
+  -H "Content-Type: application/json" \
+  -H "Authorization: $BOT_API_KEY" \
+  -d '{
+    "event_name": "'"$EVENT_NAME"'",
+    "seat_section": "'"$SEAT_SECTION"'",
+    "seat_row": "'"$SEAT_ROW"'",
+    "seat_number": "'"$SEAT_NUMBER"'"
+  }')
+echo "$CLAIM" | jq
+
+# Bot verify (verifying → verified)
+VERIFY=$(curl -s -X PATCH $BASE_URL/api/tickets/$TICKET_ID/verify \
+  -H "Authorization: $BOT_API_KEY")
+echo "$VERIFY" | jq
+
+# Optional: Bot unclaim (verifying → unverified) if you need to roll back
+# curl -s -X DELETE $BASE_URL/api/tickets/$TICKET_ID/unclaim \
+#   -H "Authorization: $BOT_API_KEY"
+```
+
+## 6) Register + Verify + Login (Buyer)
+```bash
+BUYER_CODE=$(curl -s -X POST $BASE_URL/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"buyer@msu.edu","password":"password123"}' | jq -r '.verification_code')
+
+curl -s -X POST $BASE_URL/api/auth/verify-email \
+  -H "Content-Type: application/json" \
+  -d '{"email":"buyer@msu.edu","code":"'"$BUYER_CODE"'"}'
+
+BUYER_LOGIN=$(curl -s -X POST $BASE_URL/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"buyer@msu.edu","password":"password123"}')
+BUYER_TOKEN=$(echo "$BUYER_LOGIN" | jq -r '.token')
+BUYER_ID=$(echo "$BUYER_LOGIN" | jq -r '.user.id')
+```
+
+## 7) Buyer Reserves Ticket (verified → reserved)
+```bash
+RESERVE=$(curl -s -X POST $BASE_URL/api/tickets/$TICKET_ID/reserve \
+  -H "Authorization: $BUYER_TOKEN")
+echo "$RESERVE" | jq
+PRICE_AT_RES=$(echo "$RESERVE" | jq -r '.price_at_reservation')
+RESERVED_AT=$(echo "$RESERVE" | jq -r '.reserved_at')
+```
+
+## 8) Stripe: Listen, Create PI, Confirm (reserved → paid via webhook)
+Run listener in a separate terminal:
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe --api-key $STRIPE_SECRET_KEY
+# Ensure STRIPE_WEBHOOK_SECRET in env matches the secret printed by stripe listen (or set it explicitly).
+```
+
+Create Payment Intent with metadata:
+```bash
+PI_ID=$(stripe payment_intents create \
+  --amount=$PRICE_AT_RES \
+  --currency=usd \
+  --capture-method=manual \
+  --metadata[ticket_id]=$TICKET_ID \
+  --metadata[buyer_id]=$BUYER_ID \
+  --metadata[reserved_at]=$RESERVED_AT \
+  --api-key $STRIPE_SECRET_KEY | jq -r '.id')
+echo "PI_ID=$PI_ID"
+```
+
+Confirm (triggers webhook):
+```bash
+stripe payment_intents confirm $PI_ID \
+  --payment-method=pm_card_visa \
+  --api-key $STRIPE_SECRET_KEY
+```
+
+The webhook (`/api/webhooks/stripe`) will:
+- Insert the payment_intent row (idempotent)
+- Gatekeep reservation window and buyer match
+- Set ticket to `paid` and capture, or cancel the PI if expired
+
+## 9) Verify Final Ticket State
+```bash
+curl -s $BASE_URL/api/tickets/my-listings \
+  -H "Authorization: $SELLER_TOKEN" \
+  | jq '.tickets[] | select(.id == "'"$TICKET_ID"'")'
+```
+
+Expected: `"status": "Paid"`.
+
+## Reference: Key Endpoints
+- Health: `GET /health`
+- Auth: `POST /api/auth/register`, `POST /api/auth/verify-email`, `POST /api/auth/login`
+- Games (admin): `GET /api/games`, `POST /api/games`, `DELETE /api/games/:id`
+- Tickets (seller/buyer): `GET /api/tickets`, `POST /api/tickets`, `GET /api/tickets/my-listings`, `POST /api/tickets/:id/reserve`
+- Bot: `POST /api/tickets/claim`, `PATCH /api/tickets/:id/verify`, `DELETE /api/tickets/:id/unclaim`
+- Stripe Webhook: `POST /api/webhooks/stripe`
+
+## Error Format
+```json
+{ "error": "message" }
+```
+Common codes: 400 (bad request), 401 (unauthorized), 404 (not found), 409 (conflict), 500 (server error).
 # API Reference
 
 Base URL: `http://localhost:3000`

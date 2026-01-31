@@ -179,7 +179,7 @@ async fn perform_gatekeeper_check(
     .await?;
 
     match update_result {
-        Some((_, price_at_reservation)) => {
+        Some((_, _price_at_reservation)) => {
             // Branch A: Happy Path - Reservation is still valid
             info!(
                 "Gatekeeper check passed: Ticket {} reserved by buyer {} within {} minutes",

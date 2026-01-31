@@ -1,5 +1,5 @@
 -- Create ticket status enum type
-CREATE TYPE ticket_status AS ENUM ('unverified', 'verified', 'reserved', 'paid', 'sold', 'refunding', 'cancelled');
+CREATE TYPE ticket_status AS ENUM ('unverified', 'verifying', 'verified', 'reserved', 'paid', 'sold', 'cancelled');
 
 -- Create tickets table
 CREATE TABLE tickets (
@@ -21,6 +21,10 @@ CREATE TABLE tickets (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Enforce unique seat per game listing
+ALTER TABLE tickets
+ADD CONSTRAINT uq_tickets_game_seat UNIQUE (game_id, level, seat_section, seat_row, seat_number);
 
 -- Create indexes for common queries
 CREATE INDEX idx_tickets_seller_id ON tickets(seller_id);

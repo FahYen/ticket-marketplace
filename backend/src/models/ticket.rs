@@ -8,11 +8,11 @@ use uuid::Uuid;
 #[sqlx(type_name = "ticket_status", rename_all = "lowercase")]
 pub enum TicketStatus {
     Unverified,
+    Verifying,
     Verified,
     Reserved,
     Paid,
     Sold,
-    Refunding,
     Cancelled,
 }
 
@@ -60,6 +60,27 @@ pub struct UpdateTicketRequest {
     pub price: Option<i32>,
 }
 
+/// Request payload for bot claim endpoint
+#[derive(Debug, Deserialize)]
+pub struct ClaimTicketRequest {
+    pub event_name: String,
+    pub seat_section: String,
+    pub seat_row: String,
+    pub seat_number: String,
+}
+
+/// Response payload for bot claim endpoint
+#[derive(Debug, Serialize, FromRow)]
+pub struct ClaimTicketResponse {
+    pub ticket_id: Uuid,
+    pub seller_id: Uuid,
+    pub event_name: String,
+    pub seat_section: String,
+    pub seat_row: String,
+    pub seat_number: String,
+    pub status: TicketStatus,
+}
+
 /// Response for list tickets endpoint
 #[derive(Debug, Serialize)]
 pub struct ListTicketsResponse {
@@ -79,5 +100,12 @@ pub struct ReserveTicketResponse {
     pub status: TicketStatus,
     pub price_at_reservation: i32,
     pub reserved_at: DateTime<Utc>,
+}
+
+/// Generic status response for bot verify/rollback
+#[derive(Debug, Serialize, FromRow)]
+pub struct TicketStatusResponse {
+    pub ticket_id: Uuid,
+    pub status: TicketStatus,
 }
 

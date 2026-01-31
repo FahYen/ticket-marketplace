@@ -11,8 +11,12 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::error::{AppError, Result};
-use crate::models::ticket::{CreateTicketRequest, ListTicketsResponse, MyListingsQuery, ReserveTicketResponse, Ticket, TicketStatus, UpdateTicketRequest};
-use crate::utils::auth::validate_admin_key;
+use crate::models::ticket::{
+    ClaimTicketRequest, ClaimTicketResponse, CreateTicketRequest, ListTicketsResponse,
+    MyListingsQuery, ReserveTicketResponse, Ticket, TicketStatus, TicketStatusResponse,
+    UpdateTicketRequest,
+};
+use crate::utils::auth::{acquire_bot_permit, validate_bot_key};
 use crate::utils::jwt::extract_user_id;
 use chrono::Utc;
 
@@ -141,11 +145,11 @@ pub async fn my_listings(
         // Parse status string to enum
         let status = match status_str.to_lowercase().as_str() {
             "unverified" => TicketStatus::Unverified,
+            "verifying" => TicketStatus::Verifying,
             "verified" => TicketStatus::Verified,
             "reserved" => TicketStatus::Reserved,
             "paid" => TicketStatus::Paid,
             "sold" => TicketStatus::Sold,
-            "refunding" => TicketStatus::Refunding,
             "cancelled" => TicketStatus::Cancelled,
             _ => {
                 error!("Invalid status filter: {}", status_str);
@@ -187,6 +191,139 @@ pub async fn my_listings(
     info!("Listed {} tickets for seller {}", tickets.len(), user_id);
 
     Ok(Json(ListTicketsResponse { tickets }))
+}
+
+/// Bot claim ticket (unverified → verifying)
+pub async fn claim_ticket(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Json(req): Json<ClaimTicketRequest>,
+) -> Result<Json<ClaimTicketResponse>> {
+    validate_bot_key(&headers)?;
+    let _permit = acquire_bot_permit().await?;
+
+    let result = sqlx::query_as::<_, ClaimTicketResponse>(
+        r#"
+        UPDATE tickets t
+        SET status = 'verifying',
+            updated_at = NOW()
+        FROM (
+            SELECT id
+            FROM tickets
+            WHERE status = 'unverified'
+              AND event_name = $1
+              AND seat_section = $2
+              AND seat_row = $3
+              AND seat_number = $4
+              AND transfer_deadline > NOW()
+            ORDER BY created_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        ) candidate
+        WHERE t.id = candidate.id
+        RETURNING
+            t.id AS ticket_id,
+            t.seller_id,
+            t.event_name,
+            t.seat_section,
+            t.seat_row,
+            t.seat_number,
+            t.status
+        "#,
+    )
+    .bind(&req.event_name)
+    .bind(&req.seat_section)
+    .bind(&req.seat_row)
+    .bind(&req.seat_number)
+    .fetch_optional(&pool)
+    .await?;
+
+    match result {
+        Some(resp) => {
+            info!(
+                "Ticket {} claimed by bot for event {} seat {}-{}-{}",
+                resp.ticket_id, resp.event_name, resp.seat_section, resp.seat_row, resp.seat_number
+            );
+            Ok(Json(resp))
+        }
+        None => {
+            info!(
+                "No unverified ticket available for event {} seat {}-{}-{}",
+                req.event_name, req.seat_section, req.seat_row, req.seat_number
+            );
+            Err(AppError::NotFound("No matching unverified ticket found".to_string()))
+        }
+    }
+}
+
+/// Bot verify ticket (verifying → verified)
+pub async fn verify_ticket(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<Uuid>,
+) -> Result<Json<TicketStatusResponse>> {
+    validate_bot_key(&headers)?;
+    let _permit = acquire_bot_permit().await?;
+
+    let result = sqlx::query_as::<_, TicketStatusResponse>(
+        r#"
+        UPDATE tickets
+        SET status = 'verified',
+            updated_at = NOW()
+        WHERE id = $1
+          AND status = 'verifying'
+        RETURNING id AS ticket_id, status
+        "#,
+    )
+    .bind(&ticket_id)
+    .fetch_optional(&pool)
+    .await?;
+
+    match result {
+        Some(resp) => {
+            info!("Ticket {} moved to verified", ticket_id);
+            Ok(Json(resp))
+        }
+        None => {
+            info!("Ticket {} not in verifying state for verification", ticket_id);
+            Err(AppError::Conflict("Ticket not in verifying state".to_string()))
+        }
+    }
+}
+
+/// Bot unclaim (verifying → unverified)
+pub async fn unclaim_ticket(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<Uuid>,
+) -> Result<Json<TicketStatusResponse>> {
+    validate_bot_key(&headers)?;
+    let _permit = acquire_bot_permit().await?;
+
+    let result = sqlx::query_as::<_, TicketStatusResponse>(
+        r#"
+        UPDATE tickets
+        SET status = 'unverified',
+            updated_at = NOW()
+        WHERE id = $1
+          AND status = 'verifying'
+        RETURNING id AS ticket_id, status
+        "#,
+    )
+    .bind(&ticket_id)
+    .fetch_optional(&pool)
+    .await?;
+
+    match result {
+        Some(resp) => {
+            info!("Ticket {} rolled back to unverified", ticket_id);
+            Ok(Json(resp))
+        }
+        None => {
+            info!("Ticket {} not in verifying state for rollback", ticket_id);
+            Err(AppError::Conflict("Ticket not in verifying state".to_string()))
+        }
+    }
 }
 
 /// Reserve a ticket (verified → reserved)
