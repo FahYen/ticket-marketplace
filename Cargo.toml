@@ -37,3 +37,6 @@ rand = "0.8"
 # Stripe integration
 stripe = { package = "async-stripe", version = "0.30", features = ["webhook-events", "runtime-tokio-hyper"] }
 
+# Rate limiting
+governor = "0.6"
+

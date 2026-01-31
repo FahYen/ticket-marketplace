@@ -33,3 +33,6 @@ rand.workspace = true
 # Stripe integration
 stripe.workspace = true
 
+# Rate limiting
+governor.workspace = true
+

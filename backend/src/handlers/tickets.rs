@@ -3,8 +3,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Json,
 };
-use serde::Deserialize;
-use serde::Serialize;
 use sqlx::PgPool;
 use std::env;
 use tracing::{error, info};
@@ -14,7 +12,6 @@ use crate::error::{AppError, Result};
 use crate::models::ticket::{
     ClaimTicketRequest, ClaimTicketResponse, CreateTicketRequest, ListTicketsResponse,
     MyListingsQuery, ReserveTicketResponse, Ticket, TicketStatus, TicketStatusResponse,
-    UpdateTicketRequest,
 };
 use crate::utils::auth::{acquire_bot_permit, validate_bot_key};
 use crate::utils::jwt::extract_user_id;
@@ -345,6 +342,36 @@ pub async fn reserve_ticket(
     // Calculate expiry time: NOW() - INTERVAL '1 minute' * TOTAL_RESERVATION_WINDOW_MINUTES
     // Tickets with reserved_at older than this are considered expired
     let expiry_time = Utc::now() - chrono::Duration::minutes(total_reservation_window_minutes);
+
+    // Check reservation limit per user
+    let max_reservations: i64 = env::var("MAX_RESERVATIONS_PER_USER")
+        .unwrap_or_else(|_| "3".to_string())
+        .parse()
+        .unwrap_or(3);
+
+    let active_count: (i64,) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) FROM tickets
+        WHERE reserved_by = $1
+          AND status = 'reserved'
+          AND reserved_at > $2
+        "#,
+    )
+    .bind(&buyer_id)
+    .bind(&expiry_time)
+    .fetch_one(&pool)
+    .await?;
+
+    if active_count.0 >= max_reservations {
+        info!(
+            "User {} has {} active reservations, limit is {}",
+            buyer_id, active_count.0, max_reservations
+        );
+        return Err(AppError::Conflict(format!(
+            "Maximum {} concurrent reservations allowed",
+            max_reservations
+        )));
+    }
 
     // Atomic reservation query
     // This updates the ticket to reserved status only if:
