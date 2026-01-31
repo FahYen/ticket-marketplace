@@ -827,7 +827,7 @@ RETURNING id, price_at_reservation;
 | `verified` | `reserved` | Buyer "Buy" click | `status = 'verified' OR (reserved AND expired)` | ✅ `price_at_reservation` |
 | `reserved` | `paid` | Stripe webhook | `status = 'reserved' AND buyer matches AND within ${TOTAL_RESERVATION_WINDOW_MINUTES}min` | Uses `price_at_reservation` |
 
-**Note**: Unverified tickets that fail verification are deleted (not transitioned to `cancelled`). The `cancelled` status is reserved for legitimate tickets cancelled after verification (e.g., seller cancels verified listing, refund scenarios).
+**Note**: Unverified tickets that fail verification are deleted (not transitioned to `cancelled`). The `cancelled` status is reserved for legitimate tickets cancelled after verification (e.g., seller cancels verified listing, scenarios).
 
 **State Diagram:**
 ```

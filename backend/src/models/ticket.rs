@@ -53,13 +53,6 @@ pub struct CreateTicketRequest {
     pub price: i32,
 }
 
-/// Request to update ticket (price and/or status)
-#[derive(Debug, Deserialize)]
-pub struct UpdateTicketRequest {
-    pub status: Option<String>,
-    pub price: Option<i32>,
-}
-
 /// Request payload for bot claim endpoint
 #[derive(Debug, Deserialize)]
 pub struct ClaimTicketRequest {
