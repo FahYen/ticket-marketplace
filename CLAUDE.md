@@ -8,24 +8,14 @@ MSU student sports ticket marketplace with custodial Paciolan account integratio
 
 ## Build & Run Commands
 
+All development is done via Docker (no local Rust installation required).
+
 ```bash
-# Build
-cargo build
-
-# Run with logging
-RUST_LOG=backend=debug cargo run
-
-# Run tests
-cargo test
-
-# Format and lint
-cargo fmt
-cargo clippy
-
-# Docker (includes PostgreSQL)
-docker-compose up -d          # Start services
-docker-compose logs -f backend # View logs
-./reset-db.sh                 # Reset database
+docker-compose up -d              # Start backend + PostgreSQL
+docker-compose up -d --build      # Rebuild and start
+docker-compose logs -f backend    # View logs
+docker-compose down               # Stop services
+./reset-db.sh                     # Reset database
 ```
 
 ## Architecture
@@ -41,18 +31,19 @@ docker-compose logs -f backend # View logs
 Core business logic - all transitions are atomic with race condition protection:
 
 ```
-unverified → verifying → verified → reserved → paid
+unverified → verifying → verified → reserved → paid → sold
      ↓           ↓
   (deleted)  (timeout reset)
 ```
 
-| Transition | Endpoint | Auth |
-|------------|----------|------|
-| unverified → verifying | `POST /api/tickets/claim` | BOT_API_KEY |
-| verifying → verified | `PATCH /api/tickets/:id/verify` | BOT_API_KEY |
-| verifying → unverified | `DELETE /api/tickets/:id/unclaim` | BOT_API_KEY |
-| verified → reserved | `POST /api/tickets/:id/reserve` | JWT |
-| reserved → paid | `POST /api/webhooks/stripe` | Stripe signature |
+| Transition | Endpoint | Auth | Trigger |
+|------------|----------|------|---------|
+| unverified → verifying | `POST /api/tickets/claim` | BOT_API_KEY | Bot detects incoming transfer |
+| verifying → verified | `PATCH /api/tickets/:id/verify` | BOT_API_KEY | Bot accepts transfer in Paciolan |
+| verifying → unverified | `DELETE /api/tickets/:id/unclaim` | BOT_API_KEY | Bot rollback if accept fails |
+| verified → reserved | `POST /api/tickets/:id/reserve` | JWT | Buyer clicks buy |
+| reserved → paid | `POST /api/webhooks/stripe` | Stripe signature | Stripe payment captured |
+| paid → sold | `PATCH /api/tickets/:id/sold` | BOT_API_KEY | Bot transfers ticket to buyer in Paciolan |
 
 ### Key Files
 - `backend/src/handlers/tickets.rs` - Core ticket operations (state transitions)
