@@ -25,6 +25,7 @@ pub fn create_router(pool: PgPool) -> Router {
         .route("/api/tickets/claim", post(tickets::claim_ticket))
         .route("/api/tickets/:id/verify", patch(tickets::verify_ticket))
         .route("/api/tickets/:id/unclaim", delete(tickets::unclaim_ticket))
+        .route("/api/tickets/:id/sold", patch(tickets::mark_sold))
         .route("/api/tickets/my-listings", get(tickets::my_listings))
         .route("/api/webhooks/stripe", post(webhooks::handle_stripe_webhook))
         .merge(reservation_routes)

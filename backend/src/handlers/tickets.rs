@@ -323,6 +323,41 @@ pub async fn unclaim_ticket(
     }
 }
 
+/// Bot mark ticket as sold (paid → sold)
+pub async fn mark_sold(
+    State(pool): State<PgPool>,
+    headers: HeaderMap,
+    Path(ticket_id): Path<Uuid>,
+) -> Result<Json<TicketStatusResponse>> {
+    validate_bot_key(&headers)?;
+    let _permit = acquire_bot_permit().await?;
+
+    let result = sqlx::query_as::<_, TicketStatusResponse>(
+        r#"
+        UPDATE tickets
+        SET status = 'sold',
+            updated_at = NOW()
+        WHERE id = $1
+          AND status = 'paid'
+        RETURNING id AS ticket_id, status
+        "#,
+    )
+    .bind(&ticket_id)
+    .fetch_optional(&pool)
+    .await?;
+
+    match result {
+        Some(resp) => {
+            info!("Ticket {} marked as sold (transferred to buyer)", ticket_id);
+            Ok(Json(resp))
+        }
+        None => {
+            info!("Ticket {} not in paid state for marking sold", ticket_id);
+            Err(AppError::Conflict("Ticket not in paid state".to_string()))
+        }
+    }
+}
+
 /// Reserve a ticket (verified → reserved)
 pub async fn reserve_ticket(
     State(pool): State<PgPool>,
