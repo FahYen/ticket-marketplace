@@ -4,27 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MSU student sports ticket marketplace with custodial Paciolan account integration. Rust/Axum backend with PostgreSQL, Stripe payments, and bot-based ticket verification.
+MSU student sports ticket marketplace with custodial Paciolan account integration. Rust/Axum backend with PostgreSQL, Stripe payments, bot-based ticket verification, and Next.js frontend.
 
 ## Build & Run Commands
 
-All development is done via Docker (no local Rust installation required).
+All development is done via Docker.
 
 ```bash
-docker-compose up -d              # Start backend + PostgreSQL
+docker-compose up -d              # Start all services (backend, frontend, postgres)
 docker-compose up -d --build      # Rebuild and start
-docker-compose logs -f backend    # View logs
+docker-compose logs -f backend    # View backend logs
+docker-compose logs -f frontend   # View frontend logs
 docker-compose down               # Stop services
 ./reset-db.sh                     # Reset database
 ```
 
+**URLs:**
+- Frontend: http://localhost:3001
+- Backend API: http://localhost:3000
+- Database: localhost:5432
+
+**Hot Reloading:** Frontend source files (`frontend/src/`, `frontend/public/`) are mounted as volumes. Changes reflect immediately without container restart.
+
 ## Architecture
 
 ### Tech Stack
-- **Framework**: Axum (async Rust web framework)
+- **Backend**: Axum (async Rust web framework)
+- **Frontend**: Next.js 14 (App Router) + Tailwind CSS
 - **Database**: PostgreSQL 16 with SQLx (compile-time checked queries)
 - **Auth**: JWT tokens (users) + API keys (bot/admin)
-- **Payments**: Stripe with manual capture flow
+- **Payments**: Stripe with manual capture flow (not yet integrated in frontend)
 - **Rate Limiting**: Governor (token bucket)
 
 ### Ticket State Machine
