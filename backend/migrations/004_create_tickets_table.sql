@@ -22,9 +22,10 @@ CREATE TABLE tickets (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Enforce unique seat per game listing
-ALTER TABLE tickets
-ADD CONSTRAINT uq_tickets_game_seat UNIQUE (game_id, level, seat_section, seat_row, seat_number);
+-- Enforce unique seat per game listing (only for active tickets, allows reselling)
+CREATE UNIQUE INDEX idx_tickets_unique_active_seat
+ON tickets (game_id, level, seat_section, seat_row, seat_number)
+WHERE status NOT IN ('sold', 'cancelled');
 
 -- Create indexes for common queries
 CREATE INDEX idx_tickets_seller_id ON tickets(seller_id);
