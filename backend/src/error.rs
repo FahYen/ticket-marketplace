@@ -44,6 +44,15 @@ pub enum AppError {
     #[error("Invalid sport type")]
     InvalidSportType,
 
+    #[error("Resource conflict: {0}")]
+    Conflict(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Too many requests, please slow down")]
+    TooManyRequests,
+
     #[error("Internal server error")]
     Internal(#[from] anyhow::Error),
 }
@@ -62,6 +71,9 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::InvalidSportType => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
+            AppError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+            AppError::TooManyRequests => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             AppError::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Database error".to_string(),

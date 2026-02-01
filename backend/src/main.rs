@@ -38,6 +38,9 @@ async fn main() -> anyhow::Result<()> {
     // Run database migrations
     db::run_migrations(&pool).await?;
 
+    // Start background cleanup tasks
+    utils::cleanup::start_cleanup_tasks(pool.clone());
+
     // Build our application with routes
     let app = routes::create_router(pool);
 
